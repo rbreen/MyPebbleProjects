@@ -140,4 +140,4 @@ Pebble.addEventListener('webviewclosed', function(e) {
 //
 // For now, point at a local file path. Replace with your actual URL.
 // If using CloudPebble's built-in hosting, this will be provided automatically.
-var CONFIG_PAGE_URL = 'REPLACE_WITH_YOUR_CONFIG_URL';
+var CONFIG_PAGE_URL = 'https://rbreen.github.io/MyPebbleProjects/config.html';
