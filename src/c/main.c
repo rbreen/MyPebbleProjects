@@ -62,17 +62,23 @@ static void days_to_string(uint8_t days, char *buf, size_t buf_len) {
 // ─── Persist: load & save ────────────────────────────────────────
 
 static void alarms_load(void) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "alarms_load: sizeof(Alarm)=%d", (int)sizeof(Alarm));
     for (int i = 0; i < MAX_ALARMS; i++) {
         if (persist_exists(PERSIST_KEY_ALARM(i))) {
             persist_read_data(PERSIST_KEY_ALARM(i), &s_alarms[i], sizeof(Alarm));
+            APP_LOG(APP_LOG_LEVEL_INFO,
+                    "alarms_load[%d]: FROM PERSIST %02d:%02d days=0x%02x enabled=%d",
+                    i, s_alarms[i].hour, s_alarms[i].minute,
+                    s_alarms[i].days, (int)s_alarms[i].enabled);
         } else {
-            // Default: 00:00, no repeat days, disabled
             s_alarms[i] = (Alarm){
                 .hour    = 0,
                 .minute  = 0,
                 .days    = DAYS_ONCE,
                 .enabled = false,
             };
+            APP_LOG(APP_LOG_LEVEL_INFO,
+                    "alarms_load[%d]: DEFAULT (no persist key)", i);
         }
     }
     if (persist_exists(PERSIST_KEY_WAKEUP_ID)) {
@@ -130,8 +136,13 @@ static void schedule_next_alarm(void) {
 
     for (int i = 0; i < MAX_ALARMS; i++) {
         // No `configured` check — all slots exist; skip if disabled
-        if (!s_alarms[i].enabled) continue;
+        if (!s_alarms[i].enabled) {
+            APP_LOG(APP_LOG_LEVEL_DEBUG, "schedule: slot %d disabled, skipping", i);
+            continue;
+        }
         time_t t = alarm_next_fire_time(&s_alarms[i]);
+        APP_LOG(APP_LOG_LEVEL_DEBUG,
+                "schedule: slot %d next fire = %ld", i, (long)t);
         if (t == 0) continue;
         if (earliest_time == 0 || t < earliest_time) {
             earliest_time  = t;
@@ -187,8 +198,10 @@ static void wakeup_handler(WakeupId wakeup_id, int32_t cookie) {
 
 // ─── AppMessage ───────────────────────────────────────────────────
 
-#define APPMSG_INBOX_SIZE  128
-#define APPMSG_OUTBOX_SIZE 128
+// Each uint8 key-value pair costs 8 bytes in the Pebble dictionary wire format.
+// 16 pairs (keys 0-15) x 8 bytes = 128 bytes minimum — use 256 for safe headroom.
+#define APPMSG_INBOX_SIZE  256
+#define APPMSG_OUTBOX_SIZE 256
 #define APPMSG_KEY_HANDSHAKE 15
 #define APPMSG_HANDSHAKE_VAL 0x42
 
@@ -224,6 +237,7 @@ static void appmsg_inbox_received(DictionaryIterator *iter, void *context) {
     }
 
     APP_LOG(APP_LOG_LEVEL_INFO, "AppMsg: receiving new alarm config from phone");
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "AppMsg: sizeof(Alarm)=%d", (int)sizeof(Alarm));
     bool any_changed = false;
 
     for (int slot = 0; slot < MAX_ALARMS; slot++) {
@@ -280,6 +294,9 @@ static void cb_draw_row(GContext *ctx, const Layer *cell_layer,
 
     // All slots are always shown — no "empty" state.
     // Disabled slots show dimmed time in grey; enabled show black + green dot.
+    APP_LOG(APP_LOG_LEVEL_DEBUG,
+            "draw_row[%d]: %02d:%02d days=0x%02x enabled=%d",
+            (int)cell_index->row, a->hour, a->minute, a->days, (int)a->enabled);
 
     // ── Armed indicator ───────────────────────────────────────────
     if (a->enabled) {
