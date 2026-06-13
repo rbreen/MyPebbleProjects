@@ -2,9 +2,10 @@
 
 ## Tech stack
 - **Watch app:** Pebble C SDK (C language, Basalt platform)
-- **Phone config UI:** PebbleKit JS + HTML config page
+- **Phone config UI:** PebbleKit JS + HTML config page hosted on GitHub Pages
 - **IDE:** CloudPebble — browser-based, no local install
 - **User's phone:** iPhone with rePebble app installed
+- **Config page URL:** `https://rbreen.github.io/MyPebbleProjects/config.html`
 
 ## App design decisions
 - **Max 5 alarms** — user-visible limit; keeps the list manageable
@@ -13,6 +14,8 @@
 - `days=0` (`DAYS_ONCE`) means fire once then disarm (keep configured, set `enabled=false`)
 - Communication watch↔phone via AppMessage API over Bluetooth
 - **Time display:** 24-hour format on both watch and phone config page
+- **Alarm names:** not implemented — storage has room (~16 chars × 5 = 80 bytes) but
+  AppMessage wire format would need extra keys per slot; deferred to a later step
 
 ## Alarm editing — hybrid model
 
@@ -26,7 +29,7 @@ It reads the current state from the watch when it opens, lets the user edit,
 and writes all 5 slots back on save. No per-slot partial update; the full
 configuration is replaced.
 
-**Watch editing** (planned for a later step): on-watch number pickers and day
+**Watch editing** (planned for Step 5): on-watch number pickers and day
 toggles. Architectural decisions must not close this door — in particular:
 - The `Alarm` struct and persist format must be fully self-contained on the watch
 - AppMessage is used to transfer config, not as the only way to write alarms
@@ -46,7 +49,7 @@ typedef struct {
 #define MAX_ALARMS    5
 #define DAY_SUN (1<<0), DAY_MON (1<<1), DAY_TUE (1<<2)
 #define DAY_WED (1<<3), DAY_THU (1<<4), DAY_FRI (1<<5), DAY_SAT (1<<6)
-#define DAYS_WEEKDAYS, DAYS_WEEKEND, DAYS_ALL (0x7F), DAYS_ONCE (0)
+#define DAYS_WEEKDAYS (0x3E), DAYS_WEEKEND (0x41), DAYS_ALL (0x7F), DAYS_ONCE (0)
 ```
 
 Note: `wakeup_id` is **not** stored per alarm — see Wakeup strategy below.
@@ -96,13 +99,11 @@ Given an alarm's `hour`, `minute`, and `days` bitmask:
 
 ## Step 4 architecture — three components
 
-Step 4 consists of three files that each live in a different layer:
-
 | File | Where it runs | Role |
 |------|--------------|------|
-| `config.html` | iPhone browser (inside rePebble) | UI: time pickers, day toggles, save button |
-| `pebble-js-app.js` | PebbleKit JS (inside rePebble app) | Bridge: opens config page, ferries data over Bluetooth |
-| `main.c` additions | Watch | Receives AppMessage, writes alarms to persist, reschedules |
+| `docs/config.html` | iPhone browser (inside rePebble) | UI: time selects, day toggles, presets, save/revert |
+| `src/pkjs/pebble-js-app.js` | PebbleKit JS (inside rePebble app) | Bridge: opens config page, ferries data over Bluetooth |
+| `src/c/main.c` additions | Watch | Receives AppMessage, writes alarms to persist, reschedules |
 
 ### Data flow
 
@@ -116,19 +117,45 @@ The config page communicates its result by closing itself with a special URL:
 the JSON, and sends the data to the watch as AppMessage key-value pairs.
 The watch never talks to the internet directly.
 
-### Handshake — reading current state into the config page
+### How current alarm state reaches the config page
 
-When the config page opens it needs to show the alarms already on the watch,
-not a blank form. The sequence:
+JS maintains a local `currentAlarms` cache (5 empty slots by default). The
+watch sends its full alarm state to JS whenever it has something to report
+(via key 15 = 0x42 handshake). When the user opens the config page, JS
+encodes `currentAlarms` as a URL query parameter and passes it to the page.
+The page reads it on load and pre-fills the form. This is a snapshot — it
+reflects the watch state at the moment the page opens, not a live feed.
 
-1. JS reads current alarm state from the watch via AppMessage *before* opening the page
-2. JS opens `config.html`, passing the current alarm data as a URL query parameter
-3. `config.html` reads that parameter on load and pre-fills the form
-4. User edits, taps Save
-5. `config.html` closes with `pebblekit://close?result=<JSON>`
-6. JS receives the JSON, converts it to AppMessage key-value pairs, sends to watch
-7. Watch `appmessage_inbox_received` handler writes slots to `s_alarms[]`,
-   persists them, and calls `schedule_next_alarm()`
+**Revert button:** the page keeps a deep copy of the opening snapshot
+(`originalAlarms`). Tapping Revert restores this copy, discarding any edits.
+This is a local restore, not a re-fetch from the watch — see note below.
+
+**Why no live re-sync from inside the page:** the config page webview has no
+direct Pebble API access. The only communication channels are the opening URL
+parameter (watch→page) and the close URL (page→JS). A live re-sync would
+require closing and reopening the page, which is jarring UX. Since the hybrid
+model specifies that watch and phone are never edited simultaneously, the
+snapshot approach is sufficient.
+
+### config.html UI decisions
+
+- **Time input:** two `<select>` dropdowns (hour 00-23, minute 00-59) instead
+  of `<input type="time">`. The native time picker on iOS has locale-dependent
+  buttons (e.g. Dutch "Herstel" = Clear) and jumps to current time when
+  cleared. Selects render identically on iOS, Android, and desktop.
+- **Hour select:** right-aligned; minute select left-aligned. The colon
+  separator acts as the visual centre of the time display.
+- **Week starts Monday:** display order Mo Tu We Th Fr Sa Su — Sa/Su adjacent.
+  Bit positions in the bitmask are unchanged (bit0=Sun … bit6=Sat).
+- **Day presets:** four write-only shortcut buttons below the day toggles —
+  Every day, Weekdays, Weekend, No repeat. Tapping one stamps a bitmask onto
+  the day buttons; no "active" state on the presets themselves. No repeat sets
+  `days=0` (DAYS_ONCE).
+- **"Fire once" checkbox removed:** redundant — `days=0` already means once.
+  The day row label reads "Repeat on (none = once)" to communicate this.
+- **All fields always editable:** the enabled toggle arms/disarms only; time
+  and day fields are never greyed out.
+- **Revert button** sits alongside Save at the bottom of the page.
 
 ## AppMessage wire format (watch <-> phone)
 
@@ -152,6 +179,9 @@ with hour=0, minute=0, flags=0 (days=0, enabled=false), the watch sets
 `configured=false` (empty slot). Any other combination sets `configured=true`.
 This lets the phone clear a slot by zeroing it out.
 
+**Key 15 = handshake:** watch sends `{ 15: 0x42 }` plus keys 0-14 to push its
+current state to JS. JS sends `{ 15: 0x42 }` alone to request the watch state.
+
 **JSON envelope used by `config.html` and `pebble-js-app.js`:**
 
 ```json
@@ -166,7 +196,7 @@ This lets the phone clear a slot by zeroing it out.
 }
 ```
 
-`days` is the raw bitmask integer (e.g. 62 = `DAYS_WEEKDAYS`, 65 = `DAYS_WEEKEND`).
+`days` is the raw bitmask integer (62 = DAYS_WEEKDAYS = Mo-Fr, 65 = DAYS_WEEKEND = Sa+Su).
 
 ## Persist format note
 
@@ -175,6 +205,16 @@ on-flash data will be misread. Options:
 - Uninstall + reinstall from rePebble (clears storage)
 - Or bump the persist key range (e.g. use keys 10-15 for the next layout version)
 
+## Known SDK quirks
+
+- `wakeup_get_launch_wakeup_id()` does not exist — correct function is
+  `wakeup_get_launch_event(WakeupId *id, int32_t *cookie)` (two out-params).
+- CloudPebble builds for all platforms (Basalt, Aplite, Chalk/Gabbro) in one
+  pass. The emulator defaults to Chalk (round, 260×260). Basalt is the
+  primary target (rectangular, 144×168).
+- The PebbleKit JS webview on iOS uses UIWebView (older engine), not WKWebView.
+  Avoid modern JS APIs; stick to ES5.
+
 ## Build progress
 
 | Step | Status | Summary |
@@ -182,8 +222,8 @@ on-flash data will be misread. Options:
 | 1 | done | Hello World skeleton — app lifecycle, Window, TextLayer |
 | 2 | done | MenuLayer alarm list — callbacks, struct, bitmask days, hardcoded data. Bug fixed: `days_to_string` custom-day loop was unreachable (early `return` removed). |
 | 3 | done | Persistent storage + single-slot Wakeup API scheduling |
-| 4 | next | Phone config page: `config.html` + `pebble-js-app.js` + AppMessage handler in `main.c` |
-| 5 | future | On-watch alarm editor (number pickers + day toggles) |
+| 4 | done | Phone config page: `config.html` + `pebble-js-app.js` + AppMessage handler in `main.c` |
+| 5 | next | On-watch alarm editor (number pickers + day toggles) |
 
 ## Style preferences
 - Learning project — always explain new concepts before or alongside code
