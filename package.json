@@ -4,6 +4,9 @@
     "keywords": [],
     "name": "wakemeup",
     "pebble": {
+        "capabilities": [
+            "configurable"
+        ],
         "displayName": "WakeMeUp",
         "enableMultiJS": true,
         "messageKeys": [],
@@ -12,6 +15,15 @@
             "media": []
         },
         "sdkVersion": "3",
+        "targetPlatforms": [
+            "aplite",
+            "basalt",
+            "chalk",
+            "diorite",
+            "emery",
+            "gabbro",
+            "flint"
+        ],
         "uuid": "2d28966c-8c1a-4f66-be07-7740d1663b95",
         "watchapp": {
             "watchface": false
