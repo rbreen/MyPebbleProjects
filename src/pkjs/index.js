@@ -1,25 +1,14 @@
-// pebble-js-app.js — runs inside rePebble on the phone.
+// index.js — PebbleKit JS bridge, runs inside rePebble on the phone.
 //
-// Responsibilities:
-//   1. When the user taps the gear icon, read current alarms from the watch,
-//      then open config.html with that data pre-loaded as a URL parameter.
-//   2. When config.html closes (user tapped Save), receive the JSON result
-//      and forward all 5 alarm slots to the watch via AppMessage.
-//
-// AppMessage key scheme (matches main.c and config.html):
+// KEY SCHEME (matches main.c):
 //   slot*3+0  → hour   (0-23)
 //   slot*3+1  → minute (0-59)
 //   slot*3+2  → packed flags: bits 0-6 = days bitmask, bit 7 = enabled
-//   key 15    → handshake: watch sends 0x42 to say "I'm ready, here is my state"
-//
-// The config page URL is a data: URI so no external hosting is needed.
-// In production you'd host config.html on GitHub Pages and use that URL instead.
+//   key 15    → handshake value 0x42
 
-// ── Alarm state cache ────────────────────────────────────────────
-// We hold a local copy of the alarm state so we can pass it to the
-// config page immediately when the gear icon is tapped, rather than
-// waiting for an async round-trip to the watch.
-// Initialise to 5 empty slots.
+var CONFIG_PAGE_URL = 'https://rbreen.github.io/MyPebbleProjects/config.html';
+
+// ── Alarm state cache ─────────────────────────────────────────────
 var currentAlarms = [
   { hour: 0, minute: 0, days: 0, enabled: false },
   { hour: 0, minute: 0, days: 0, enabled: false },
@@ -28,29 +17,36 @@ var currentAlarms = [
   { hour: 0, minute: 0, days: 0, enabled: false }
 ];
 
-// ── Decode an AppMessage dictionary into currentAlarms[] ─────────
-// Called when the watch sends its state to us.
+// ── Decode AppMessage payload → currentAlarms[] ───────────────────
 function decodeAlarmsFromMessage(payload) {
+  console.log('[DEBUG] decodeAlarmsFromMessage — raw payload: ' + JSON.stringify(payload));
   for (var slot = 0; slot < 5; slot++) {
     var keyHour  = slot * 3 + 0;
     var keyMin   = slot * 3 + 1;
     var keyFlags = slot * 3 + 2;
-
-    // payload keys arrive as strings in PebbleKit JS
-    if (payload[keyHour] !== undefined) {
-      var flags = payload[keyFlags] || 0;
+    // PebbleKit JS delivers ALL keys as strings — always use String() to look them up
+    var hour  = payload[String(keyHour)];
+    var min   = payload[String(keyMin)];
+    var flags = payload[String(keyFlags)];
+    if (hour !== undefined) {
+      flags = flags || 0;
       currentAlarms[slot] = {
-        hour:    payload[keyHour],
-        minute:  payload[keyMin],
-        days:    flags & 0x7F,          // bits 0-6
-        enabled: (flags & 0x80) !== 0   // bit 7
+        hour:    hour,
+        minute:  min,
+        days:    flags & 0x7F,
+        enabled: (flags & 0x80) !== 0
       };
+      console.log('[DEBUG] slot ' + slot + ': hour=' + hour + ' min=' + min +
+                  ' flags=0x' + flags.toString(16) +
+                  ' days=0x' + (flags & 0x7F).toString(16) +
+                  ' enabled=' + ((flags & 0x80) !== 0));
+    } else {
+      console.log('[DEBUG] slot ' + slot + ': keys not found in payload');
     }
   }
 }
 
-// ── Encode currentAlarms[] into an AppMessage dictionary ─────────
-// Called when we need to send the config page's result back to the watch.
+// ── Encode currentAlarms[] → AppMessage dict ──────────────────────
 function encodeAlarmsToMessage(alarms) {
   var dict = {};
   for (var slot = 0; slot < 5; slot++) {
@@ -59,85 +55,98 @@ function encodeAlarmsToMessage(alarms) {
     dict[slot * 3 + 0] = a.hour;
     dict[slot * 3 + 1] = a.minute;
     dict[slot * 3 + 2] = flags;
+    console.log('[DEBUG] encode slot ' + slot + ': hour=' + a.hour +
+                ' min=' + a.minute + ' flags=0x' + flags.toString(16));
   }
   return dict;
 }
 
-// ── Receive messages from the watch ─────────────────────────────
-// The watch sends key 15 = 0x42 as a "here is my state" signal,
-// accompanied by the current alarm slots in keys 0-14.
+// ── Receive messages from the watch ──────────────────────────────
 Pebble.addEventListener('appmessage', function(e) {
+  console.log('[DEBUG] appmessage received — raw: ' + JSON.stringify(e.payload));
   var payload = e.payload;
-  console.log('JS received appmessage: ' + JSON.stringify(payload));
 
-  // Key 15 = handshake — the watch is sending us its current alarm state
-  if (payload[15] === 0x42) {
+  // Key 15 = handshake — watch is pushing its current alarm state
+  // PebbleKit JS delivers ALL dictionary keys as strings, never numbers.
+  // So key 15 arrives as payload["15"], not payload[15].
+  var handshakeVal = payload['15'];
+  console.log('[DEBUG] handshake key "15" value: ' + handshakeVal + ' (expect 66 = 0x42)');
+
+  // Value also arrives as a number, so compare numerically
+  if (handshakeVal !== undefined && Number(handshakeVal) === 0x42) {
+    console.log('[DEBUG] handshake matched — decoding alarms from watch');
     decodeAlarmsFromMessage(payload);
-    console.log('JS updated alarm cache from watch: ' + JSON.stringify(currentAlarms));
+    console.log('[DEBUG] currentAlarms after decode: ' + JSON.stringify(currentAlarms));
+  } else {
+    console.log('[DEBUG] no handshake key in message — ignoring (val=' + handshakeVal + ')');
   }
 });
 
-// ── Build and open the config page ──────────────────────────────
-// Fires when the user taps the gear (⚙) icon next to the app in rePebble.
+// ── Open config page ──────────────────────────────────────────────
 Pebble.addEventListener('showConfiguration', function() {
-  console.log('JS showConfiguration — opening config page');
+  console.log('[DEBUG] showConfiguration fired');
+  console.log('[DEBUG] currentAlarms at open time: ' + JSON.stringify(currentAlarms));
 
-  // Pass the current alarm state to the page as a URL-encoded JSON query param.
-  // The page reads this on load to pre-fill its form fields.
   var alarmParam = encodeURIComponent(JSON.stringify(currentAlarms));
-
-  // CONFIG_PAGE_URL is set at the bottom of this file.
-  // In development this is a data: URI; swap for a GitHub Pages URL in production.
-  var url = CONFIG_PAGE_URL + '?alarms=' + alarmParam;
+  // Cache-buster: append current timestamp so rePebble's UIWebView always
+  // fetches a fresh copy of config.html rather than serving a cached version.
+  var cacheBust = '&_=' + Date.now();
+  var url = CONFIG_PAGE_URL + '?alarms=' + alarmParam + cacheBust;
+  console.log('[DEBUG] opening URL: ' + url.substring(0, 120) + '...');
   Pebble.openURL(url);
 });
 
-// ── Receive the result when the config page closes ───────────────
-// Fires when config.html navigates to pebblekit://close?result=<JSON>.
-// e.response contains the URL-decoded result string.
+// ── Receive result when config page closes ────────────────────────
 Pebble.addEventListener('webviewclosed', function(e) {
-  if (!e.response) {
-    console.log('JS webviewclosed — no result (user cancelled)');
+  console.log('[DEBUG] webviewclosed fired');
+  console.log('[DEBUG] e.response present: ' + (!!e.response));
+
+  if (!e.response || e.response === 'CANCELLED') {
+    console.log('[DEBUG] webviewclosed — no result or cancelled, doing nothing');
     return;
   }
 
-  console.log('JS webviewclosed — result: ' + e.response);
+  console.log('[DEBUG] raw response (first 200 chars): ' + e.response.substring(0, 200));
 
   var result;
   try {
     result = JSON.parse(decodeURIComponent(e.response));
+    console.log('[DEBUG] parsed result OK — alarm count: ' +
+                (result.alarms ? result.alarms.length : 'NO ALARMS KEY'));
   } catch (err) {
-    console.log('JS failed to parse result: ' + err);
+    console.log('[DEBUG] ERROR parsing result: ' + err);
     return;
   }
 
   if (!result.alarms || result.alarms.length !== 5) {
-    console.log('JS result has unexpected format');
+    console.log('[DEBUG] ERROR unexpected result format: ' + JSON.stringify(result));
     return;
   }
 
-  // Update local cache
   currentAlarms = result.alarms;
+  console.log('[DEBUG] currentAlarms updated from config page: ' + JSON.stringify(currentAlarms));
 
-  // Send all 5 slots to the watch via AppMessage
   var dict = encodeAlarmsToMessage(currentAlarms);
-  console.log('JS sending to watch: ' + JSON.stringify(dict));
+  console.log('[DEBUG] sending AppMessage to watch: ' + JSON.stringify(dict));
 
   Pebble.sendAppMessage(
     dict,
-    function() { console.log('JS AppMessage send ACK'); },
-    function() { console.log('JS AppMessage send NACK — delivery failed'); }
+    function() { console.log('[DEBUG] AppMessage ACK — watch received the config'); },
+    function(e) { console.log('[DEBUG] AppMessage NACK — delivery failed: ' + JSON.stringify(e)); }
   );
 });
 
-// ── Config page URL ──────────────────────────────────────────────
-// During development: set this to the data: URI generated from config.html.
-// The CloudPebble simulator will show the page URL in the JS console when
-// you run it — or paste the config.html content into a base64 encoder.
-//
-// For production: host config.html on GitHub Pages and use:
-//   var CONFIG_PAGE_URL = 'https://yourusername.github.io/wakemeup/config.html';
-//
-// For now, point at a local file path. Replace with your actual URL.
-// If using CloudPebble's built-in hosting, this will be provided automatically.
-var CONFIG_PAGE_URL = 'https://rbreen.github.io/MyPebbleProjects/config.html';
+// ── App ready ─────────────────────────────────────────────────────
+// Fires when the JS runtime starts and the watch is connected.
+// We send the handshake immediately so the watch pushes its current
+// alarm state to us — this primes currentAlarms before the user
+// opens the config page.
+Pebble.addEventListener('ready', function() {
+  console.log('[DEBUG] ready — watch: ' + Pebble.getActiveWatchInfo().model);
+  console.log('[DEBUG] ready — sending handshake to request alarm state from watch');
+  Pebble.sendAppMessage(
+    { 15: 0x42 },
+    function() { console.log('[DEBUG] ready handshake ACK'); },
+    function(e) { console.log('[DEBUG] ready handshake NACK: ' + JSON.stringify(e)); }
+  );
+});
