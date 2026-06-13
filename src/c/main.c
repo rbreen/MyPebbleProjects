@@ -4,53 +4,48 @@
 
 #define MAX_ALARMS 5
 
-// Days of week as a bitmask — one bit per day
-#define DAY_SUN (1 << 0)   // = 1
-#define DAY_MON (1 << 1)   // = 2
-#define DAY_TUE (1 << 2)   // = 4
-#define DAY_WED (1 << 3)   // = 8
-#define DAY_THU (1 << 4)   // = 16
-#define DAY_FRI (1 << 5)   // = 32
-#define DAY_SAT (1 << 6)   // = 64
+#define DAY_SUN (1 << 0)
+#define DAY_MON (1 << 1)
+#define DAY_TUE (1 << 2)
+#define DAY_WED (1 << 3)
+#define DAY_THU (1 << 4)
+#define DAY_FRI (1 << 5)
+#define DAY_SAT (1 << 6)
 
 #define DAYS_WEEKDAYS (DAY_MON|DAY_TUE|DAY_WED|DAY_THU|DAY_FRI)
 #define DAYS_WEEKEND  (DAY_SAT|DAY_SUN)
-#define DAYS_ALL      (0x7F)   // all 7 bits set
-#define DAYS_ONCE     (0)      // 0 = fire once then disable
+#define DAYS_ALL      (0x7F)
+#define DAYS_ONCE     (0)
 
-// wakeup_id removed from Alarm — we now use a single global wakeup.
-// NOTE: if you have persisted data from the previous struct layout (which
-// included wakeup_id), clear storage once by incrementing PERSIST_KEY_ALARM
-// range or doing a full uninstall/reinstall from the rePebble app.
+// `configured` field removed — all 5 slots always exist.
+// A slot is "inactive" simply when enabled=false.
+// This is a struct layout change from the previous version:
+// uninstall + reinstall from rePebble to clear stale persisted data.
 typedef struct {
-    uint8_t  hour;
-    uint8_t  minute;
-    uint8_t  days;
+    uint8_t  hour;     // 0-23
+    uint8_t  minute;   // 0-59
+    uint8_t  days;     // bitmask; 0 = DAYS_ONCE (fire once, no repeat)
     bool     enabled;
-    bool     configured;   // distinguishes "real but disarmed" from "empty slot"
 } Alarm;
 
-// ── Persist keys ─────────────────────────────────────────────────
-// Keys 0–4: one Alarm struct per slot.
-// Key 5:    the single active WakeupId (int32_t), so we can cancel it on
-//           reschedule even after a reboot.  If not set, no wakeup is live.
-#define PERSIST_KEY_ALARM(i)   (i)      // 0–4
-#define PERSIST_KEY_WAKEUP_ID  (5)      // stores int32_t
+#define PERSIST_KEY_ALARM(i)   (i)   // keys 0-4
+#define PERSIST_KEY_WAKEUP_ID  (5)   // int32_t
 
 static Alarm    s_alarms[MAX_ALARMS];
-static int32_t  s_active_wakeup_id = -1;  // -1 = none scheduled
+static int32_t  s_active_wakeup_id = -1;
 
 static Window    *s_main_window;
 static MenuLayer *s_menu_layer;
 
 // ─── Helper: days bitmask → human string ─────────────────────────
+
 static void days_to_string(uint8_t days, char *buf, size_t buf_len) {
     if      (days == DAYS_ONCE)     { snprintf(buf, buf_len, "Once");     return; }
     else if (days == DAYS_ALL)      { snprintf(buf, buf_len, "Daily");    return; }
     else if (days == DAYS_WEEKDAYS) { snprintf(buf, buf_len, "Weekdays"); return; }
     else if (days == DAYS_WEEKEND)  { snprintf(buf, buf_len, "Weekend");  return; }
 
-    // Custom mix — build "Su Mo Fr" style string
+    // Custom mix — build "Mo We Fr" style string
     const char *abbr[7] = {"Su","Mo","Tu","We","Th","Fr","Sa"};
     int pos = 0;
     buf[0] = '\0';
@@ -71,16 +66,15 @@ static void alarms_load(void) {
         if (persist_exists(PERSIST_KEY_ALARM(i))) {
             persist_read_data(PERSIST_KEY_ALARM(i), &s_alarms[i], sizeof(Alarm));
         } else {
+            // Default: 00:00, no repeat days, disabled
             s_alarms[i] = (Alarm){
-                .hour       = 0,
-                .minute     = 0,
-                .days       = DAYS_ONCE,
-                .enabled    = false,
-                .configured = false,
+                .hour    = 0,
+                .minute  = 0,
+                .days    = DAYS_ONCE,
+                .enabled = false,
             };
         }
     }
-    // Load the persisted wakeup id so we can cancel it after a reboot
     if (persist_exists(PERSIST_KEY_WAKEUP_ID)) {
         persist_read_data(PERSIST_KEY_WAKEUP_ID, &s_active_wakeup_id, sizeof(int32_t));
     }
@@ -95,174 +89,109 @@ static void wakeup_id_save(void) {
 }
 
 // ─── Scheduling ──────────────────────────────────────────────────
-//
-// SINGLE-WAKEUP STRATEGY
-// ──────────────────────
-// The Pebble OS has a global pool of 8 wakeup slots shared by ALL apps.
-// There is no API to query how many slots remain — you only find out a slot
-// is unavailable when wakeup_schedule() returns E_OUT_OF_RESOURCES.
-//
-// To be a good citizen we consume exactly ONE slot at all times:
-//   1. Scan all alarms, compute the next fire time for each enabled one.
-//   2. Pick the alarm that fires soonest.
-//   3. Cancel the currently-scheduled wakeup (if any) and schedule that one.
-//   4. Store the WakeupId in flash so we can cancel it after a reboot.
-//
-// When the wakeup fires:
-//   - Handle that alarm (vibrate, disarm-if-once, etc.)
-//   - Call schedule_next_alarm() again to schedule the one after it.
-//
-// MISSED WAKEUPS
-// ──────────────
-// We pass notify_if_missed=false.  This means: if the watch was off when the
-// wakeup was due, the OS discards it silently.  On next launch (user opens
-// the app, or charger wakes it), schedule_next_alarm() runs, computes all
-// fire times from *now*, and schedules the next future alarm.  Alarms whose
-// time has already passed are naturally skipped — no stale alert fires hours
-// after you've woken up.
 
-// Returns the next UTC timestamp at which alarm `a` should fire,
-// looking forward from the current moment.  Returns 0 if no future
-// time can be found (should not happen for a valid enabled alarm).
 static time_t alarm_next_fire_time(const Alarm *a) {
     time_t     now = time(NULL);
     struct tm *t   = localtime(&now);
 
-    // tm_wday: 0=Sun … 6=Sat, matching our bitmask bit positions.
     for (int day_offset = 0; day_offset < 7; day_offset++) {
         int wday = (t->tm_wday + day_offset) % 7;
 
-        // DAYS_ONCE (days==0) matches any day — fire on the next slot.
         bool day_matches = (a->days == DAYS_ONCE) || (a->days & (1 << wday));
         if (!day_matches) continue;
 
         struct tm candidate = *t;
-        candidate.tm_mday  += day_offset;  // mktime normalises month/year overflow
+        candidate.tm_mday  += day_offset;
         candidate.tm_hour   = a->hour;
         candidate.tm_min    = a->minute;
         candidate.tm_sec    = 0;
-        candidate.tm_isdst  = -1;          // let libc resolve DST
+        candidate.tm_isdst  = -1;
 
         time_t fire_time = mktime(&candidate);
 
-        // 1-second buffer so a just-triggered alarm doesn't immediately re-fire
-        if (fire_time > now + 1) {
+        // 60-second buffer: alarms fire at HH:MM:00, so we need to be past
+        // the entire minute to avoid a just-fired alarm rescheduling itself
+        // for the same minute on the same day.
+        if (fire_time > now + 60) {
             return fire_time;
         }
     }
-    return 0;  // no future occurrence found
+    return 0;
 }
 
-// Cancel whatever wakeup is currently live (if any), scan all alarms,
-// and schedule exactly one wakeup for the soonest upcoming alarm.
-// Call this whenever alarm state changes, and after handling a fired alarm.
 static void schedule_next_alarm(void) {
-    // Step 1 — cancel the current wakeup
     if (s_active_wakeup_id >= 0) {
         wakeup_cancel((WakeupId)s_active_wakeup_id);
         s_active_wakeup_id = -1;
     }
 
-    // Step 2 — find the alarm with the earliest next fire time
     time_t  earliest_time  = 0;
     int     earliest_index = -1;
 
     for (int i = 0; i < MAX_ALARMS; i++) {
-        if (!s_alarms[i].configured || !s_alarms[i].enabled) continue;
+        // No `configured` check — all slots exist; skip if disabled
+        if (!s_alarms[i].enabled) continue;
         time_t t = alarm_next_fire_time(&s_alarms[i]);
-        if (t == 0) continue;  // shouldn't happen, but skip if it does
+        if (t == 0) continue;
         if (earliest_time == 0 || t < earliest_time) {
             earliest_time  = t;
             earliest_index = i;
         }
     }
 
-    // Step 3 — schedule it (or leave s_active_wakeup_id = -1 if none)
     if (earliest_index >= 0) {
-        // Cookie = alarm index, so wakeup_handler knows which alarm fired.
-        // notify_if_missed=false: missed wakeups are discarded; on next
-        // launch schedule_next_alarm() recomputes from 'now' automatically.
         WakeupId wid = wakeup_schedule(
             earliest_time,
             (int32_t)earliest_index,
             false /*notify_if_missed*/
         );
-
         if (wid >= 0) {
             s_active_wakeup_id = (int32_t)wid;
             APP_LOG(APP_LOG_LEVEL_INFO,
                     "Scheduled alarm %d at %ld (wakeup_id %ld)",
                     earliest_index, (long)earliest_time, (long)wid);
         } else {
-            // E_OUT_OF_RESOURCES means the system-wide pool is full.
-            // Other apps are using all 8 slots.  Nothing we can do except log.
             APP_LOG(APP_LOG_LEVEL_ERROR,
                     "wakeup_schedule failed: error %ld", (long)wid);
         }
+    } else {
+        APP_LOG(APP_LOG_LEVEL_INFO, "No enabled alarms — no wakeup scheduled");
     }
 
-    // Step 4 — persist the new wakeup id (or -1) so we can cancel after reboot
     wakeup_id_save();
 }
 
 // ─── Wakeup handler ──────────────────────────────────────────────
-//
-// Called when:
-//   a) the app is already open and a wakeup fires, or
-//   b) the app was launched by a wakeup (we invoke this manually from init).
-//
-// `cookie` holds the alarm index we passed to wakeup_schedule().
 
 static void wakeup_handler(WakeupId wakeup_id, int32_t cookie) {
     int index = (int)cookie;
     if (index < 0 || index >= MAX_ALARMS) return;
 
-    // The wakeup has fired and is now consumed — clear our record of it
     s_active_wakeup_id = -1;
 
     Alarm *a = &s_alarms[index];
-
-    // Vibrate to alert the user.
-    // vibes_long_pulse() = single ~1-second buzz.
-    // Could use vibes_double_pulse() or a custom VibePattern for something
-    // more insistent; keeping it simple for now.
     vibes_long_pulse();
 
     if (a->days == DAYS_ONCE) {
-        // One-shot: disarm but keep configured so user can see + re-enable it
+        // One-shot: disarm after firing
         a->enabled = false;
         alarm_save(index);
     }
-    // Repeating alarms stay enabled; schedule_next_alarm() below will find them.
 
-    // Schedule the next upcoming alarm across the whole list
     schedule_next_alarm();
 
-    // Refresh the list if the app is open (s_menu_layer is NULL if not)
     if (s_menu_layer) {
         menu_layer_reload_data(s_menu_layer);
     }
 }
 
-// ─── AppMessage — phone config page integration ───────────────────
-//
-// AppMessage is the Bluetooth channel between PebbleKit JS (on the phone)
-// and the watch app.  It works as a key-value store: both sides send and
-// receive dictionaries of integer key → integer value pairs.
-//
-// Buffer size: each key-value pair costs ~7 bytes on the wire.
-// 16 pairs × 7 = 112 bytes — round up to 128 for headroom.
+// ─── AppMessage ───────────────────────────────────────────────────
+
 #define APPMSG_INBOX_SIZE  128
 #define APPMSG_OUTBOX_SIZE 128
-
-// Key 15: handshake — JS sends this to ask for current state;
-// watch replies with full alarm data + this key to confirm.
 #define APPMSG_KEY_HANDSHAKE 15
 #define APPMSG_HANDSHAKE_VAL 0x42
 
-// ── Outbox: send current alarm state to the phone ─────────────────
-// Called in response to a handshake from JS, so the config page can
-// pre-fill its form with the alarms already stored on the watch.
 static void appmsg_send_alarms(void) {
     DictionaryIterator *iter;
     AppMessageResult result = app_message_outbox_begin(&iter);
@@ -273,13 +202,11 @@ static void appmsg_send_alarms(void) {
 
     for (int slot = 0; slot < MAX_ALARMS; slot++) {
         Alarm *a = &s_alarms[slot];
-        // Pack enabled into bit 7; days occupies bits 0-6 (max 0x7F).
         uint8_t flags = (a->days & 0x7F) | (a->enabled ? 0x80 : 0);
         dict_write_uint8(iter, slot * 3 + 0, a->hour);
         dict_write_uint8(iter, slot * 3 + 1, a->minute);
         dict_write_uint8(iter, slot * 3 + 2, flags);
     }
-    // Handshake key tells JS this message is a full state dump
     dict_write_uint8(iter, APPMSG_KEY_HANDSHAKE, APPMSG_HANDSHAKE_VAL);
 
     result = app_message_outbox_send();
@@ -288,10 +215,6 @@ static void appmsg_send_alarms(void) {
     }
 }
 
-// ── Inbox: receive alarm config from the phone ────────────────────
-// Two cases:
-//   a) JS sends key 15 = 0x42 only → handshake; reply with current state.
-//   b) JS sends keys 0-14 → new config from the config page; write + reschedule.
 static void appmsg_inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *handshake = dict_find(iter, APPMSG_KEY_HANDSHAKE);
     if (handshake && handshake->value->uint8 == APPMSG_HANDSHAKE_VAL) {
@@ -308,30 +231,23 @@ static void appmsg_inbox_received(DictionaryIterator *iter, void *context) {
         Tuple *t_min   = dict_find(iter, slot * 3 + 1);
         Tuple *t_flags = dict_find(iter, slot * 3 + 2);
 
-        // All three keys must arrive together to constitute a valid slot update
         if (!t_hour || !t_min || !t_flags) continue;
 
         uint8_t hour    = t_hour->value->uint8;
         uint8_t min     = t_min->value->uint8;
         uint8_t flags   = t_flags->value->uint8;
-        uint8_t days    = flags & 0x7F;
-        bool    enabled = (flags & 0x80) != 0;
 
-        // All-zero slot from the phone means "clear this slot"
-        bool configured = (hour != 0 || min != 0 || days != 0 || enabled);
-
-        s_alarms[slot].hour       = hour;
-        s_alarms[slot].minute     = min;
-        s_alarms[slot].days       = days;
-        s_alarms[slot].enabled    = enabled;
-        s_alarms[slot].configured = configured;
+        s_alarms[slot].hour    = hour;
+        s_alarms[slot].minute  = min;
+        s_alarms[slot].days    = flags & 0x7F;
+        s_alarms[slot].enabled = (flags & 0x80) != 0;
 
         alarm_save(slot);
         any_changed = true;
 
         APP_LOG(APP_LOG_LEVEL_DEBUG,
-                "Slot %d: %02d:%02d days=0x%02x enabled=%d configured=%d",
-                slot, hour, min, days, (int)enabled, (int)configured);
+                "Slot %d: %02d:%02d days=0x%02x enabled=%d",
+                slot, hour, min, s_alarms[slot].days, (int)s_alarms[slot].enabled);
     }
 
     if (any_changed) {
@@ -343,7 +259,6 @@ static void appmsg_inbox_received(DictionaryIterator *iter, void *context) {
 }
 
 static void appmsg_inbox_dropped(AppMessageResult reason, void *context) {
-    // Fires if the inbox buffer overflowed — most likely APPMSG_INBOX_SIZE too small
     APP_LOG(APP_LOG_LEVEL_ERROR, "AppMsg inbox dropped, reason: %d", (int)reason);
 }
 
@@ -363,22 +278,13 @@ static void cb_draw_row(GContext *ctx, const Layer *cell_layer,
     GRect  b = layer_get_bounds(cell_layer);
     bool   hi = menu_cell_layer_is_highlighted(cell_layer);
 
-    // ── Empty slot ────────────────────────────────────────────────
-    if (!a->configured) {
-        graphics_context_set_text_color(ctx, hi ? GColorWhite : GColorDarkGray);
-        graphics_draw_text(ctx, "— empty —",
-            fonts_get_system_font(FONT_KEY_GOTHIC_18),
-            GRect(0, 12, b.size.w, 22),
-            GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-        return;
-    }
+    // All slots are always shown — no "empty" state.
+    // Disabled slots show dimmed time in grey; enabled show black + green dot.
 
-    // ── Armed indicator — green dot, right edge ───────────────────
+    // ── Armed indicator ───────────────────────────────────────────
     if (a->enabled) {
         graphics_context_set_fill_color(ctx, GColorGreen);
-        graphics_fill_circle(ctx,
-            GPoint(b.size.w - 14, b.size.h / 2),
-            8);
+        graphics_fill_circle(ctx, GPoint(b.size.w - 14, b.size.h / 2), 8);
     }
 
     // ── Text colours ──────────────────────────────────────────────
@@ -406,15 +312,14 @@ static void cb_draw_row(GContext *ctx, const Layer *cell_layer,
         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
-// Toggle enabled state; save and reschedule the global wakeup.
+// Select toggles enabled on any slot (no configured guard needed anymore)
 static void cb_select(MenuLayer *layer, MenuIndex *cell_index, void *data) {
     int    index = cell_index->row;
     Alarm *a     = &s_alarms[index];
-    if (!a->configured) return;
 
     a->enabled = !a->enabled;
     alarm_save(index);
-    schedule_next_alarm();         // recompute which alarm is next across all slots
+    schedule_next_alarm();
     menu_layer_reload_data(layer);
 }
 
@@ -437,38 +342,20 @@ static void main_window_load(Window *window) {
 
 static void main_window_unload(Window *window) {
     menu_layer_destroy(s_menu_layer);
-    s_menu_layer = NULL;  // guard: wakeup_handler checks this before reloading
+    s_menu_layer = NULL;
 }
 
 // ─── App Lifecycle ────────────────────────────────────────────────
 
 static void init(void) {
-    // Load alarms and persisted wakeup id from flash
     alarms_load();
 
-    // ── AppMessage: open the channel and register callbacks ───────
-    // app_message_open() allocates the inbox and outbox buffers.
-    // Must be called before any send/receive can happen.
-    // The sizes (in bytes) must be large enough to hold the largest
-    // message we expect; 128 bytes covers our 16 key-value pairs comfortably.
     app_message_register_inbox_received(appmsg_inbox_received);
     app_message_register_inbox_dropped(appmsg_inbox_dropped);
     app_message_open(APPMSG_INBOX_SIZE, APPMSG_OUTBOX_SIZE);
 
-    // Register handler for wakeups that fire while the app is already open
     wakeup_service_subscribe(wakeup_handler);
 
-    // If the OS launched us because a wakeup fired, handle it now.
-    // (The service callback above won't fire for a launch-by-wakeup event —
-    //  the OS delivers it once via wakeup_get_launch_event instead.)
-    //
-    // Correct SDK 3 signature (confirmed by IDE / compiler):
-    //   bool wakeup_get_launch_event(WakeupId *id, int32_t *cookie)
-    //     — returns true and fills both out-params if launched by wakeup
-    //
-    // NOTE: wakeup_get_launch_wakeup_id() does not exist (wrong name used
-    // in first attempt); wakeup_get_launch_cookie() also does not exist
-    // (the cookie comes through the second parameter of this call instead).
     if (launch_reason() == APP_LAUNCH_WAKEUP) {
         WakeupId fired_id;
         int32_t  cookie;
@@ -476,9 +363,6 @@ static void init(void) {
             wakeup_handler(fired_id, cookie);
         }
     } else {
-        // Normal launch (user opened the app).  Reschedule defensively:
-        // this handles the case where the watch was off when an alarm was due —
-        // the missed wakeup was discarded, so we recompute from 'now'.
         schedule_next_alarm();
     }
 
