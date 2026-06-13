@@ -244,6 +244,109 @@ static void wakeup_handler(WakeupId wakeup_id, int32_t cookie) {
     }
 }
 
+// ─── AppMessage — phone config page integration ───────────────────
+//
+// AppMessage is the Bluetooth channel between PebbleKit JS (on the phone)
+// and the watch app.  It works as a key-value store: both sides send and
+// receive dictionaries of integer key → integer value pairs.
+//
+// Buffer size: each key-value pair costs ~7 bytes on the wire.
+// 16 pairs × 7 = 112 bytes — round up to 128 for headroom.
+#define APPMSG_INBOX_SIZE  128
+#define APPMSG_OUTBOX_SIZE 128
+
+// Key 15: handshake — JS sends this to ask for current state;
+// watch replies with full alarm data + this key to confirm.
+#define APPMSG_KEY_HANDSHAKE 15
+#define APPMSG_HANDSHAKE_VAL 0x42
+
+// ── Outbox: send current alarm state to the phone ─────────────────
+// Called in response to a handshake from JS, so the config page can
+// pre-fill its form with the alarms already stored on the watch.
+static void appmsg_send_alarms(void) {
+    DictionaryIterator *iter;
+    AppMessageResult result = app_message_outbox_begin(&iter);
+    if (result != APP_MSG_OK) {
+        APP_LOG(APP_LOG_LEVEL_ERROR, "outbox_begin failed: %d", (int)result);
+        return;
+    }
+
+    for (int slot = 0; slot < MAX_ALARMS; slot++) {
+        Alarm *a = &s_alarms[slot];
+        // Pack enabled into bit 7; days occupies bits 0-6 (max 0x7F).
+        uint8_t flags = (a->days & 0x7F) | (a->enabled ? 0x80 : 0);
+        dict_write_uint8(iter, slot * 3 + 0, a->hour);
+        dict_write_uint8(iter, slot * 3 + 1, a->minute);
+        dict_write_uint8(iter, slot * 3 + 2, flags);
+    }
+    // Handshake key tells JS this message is a full state dump
+    dict_write_uint8(iter, APPMSG_KEY_HANDSHAKE, APPMSG_HANDSHAKE_VAL);
+
+    result = app_message_outbox_send();
+    if (result != APP_MSG_OK) {
+        APP_LOG(APP_LOG_LEVEL_ERROR, "outbox_send failed: %d", (int)result);
+    }
+}
+
+// ── Inbox: receive alarm config from the phone ────────────────────
+// Two cases:
+//   a) JS sends key 15 = 0x42 only → handshake; reply with current state.
+//   b) JS sends keys 0-14 → new config from the config page; write + reschedule.
+static void appmsg_inbox_received(DictionaryIterator *iter, void *context) {
+    Tuple *handshake = dict_find(iter, APPMSG_KEY_HANDSHAKE);
+    if (handshake && handshake->value->uint8 == APPMSG_HANDSHAKE_VAL) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "AppMsg: handshake — sending alarm state to phone");
+        appmsg_send_alarms();
+        return;
+    }
+
+    APP_LOG(APP_LOG_LEVEL_INFO, "AppMsg: receiving new alarm config from phone");
+    bool any_changed = false;
+
+    for (int slot = 0; slot < MAX_ALARMS; slot++) {
+        Tuple *t_hour  = dict_find(iter, slot * 3 + 0);
+        Tuple *t_min   = dict_find(iter, slot * 3 + 1);
+        Tuple *t_flags = dict_find(iter, slot * 3 + 2);
+
+        // All three keys must arrive together to constitute a valid slot update
+        if (!t_hour || !t_min || !t_flags) continue;
+
+        uint8_t hour    = t_hour->value->uint8;
+        uint8_t min     = t_min->value->uint8;
+        uint8_t flags   = t_flags->value->uint8;
+        uint8_t days    = flags & 0x7F;
+        bool    enabled = (flags & 0x80) != 0;
+
+        // All-zero slot from the phone means "clear this slot"
+        bool configured = (hour != 0 || min != 0 || days != 0 || enabled);
+
+        s_alarms[slot].hour       = hour;
+        s_alarms[slot].minute     = min;
+        s_alarms[slot].days       = days;
+        s_alarms[slot].enabled    = enabled;
+        s_alarms[slot].configured = configured;
+
+        alarm_save(slot);
+        any_changed = true;
+
+        APP_LOG(APP_LOG_LEVEL_DEBUG,
+                "Slot %d: %02d:%02d days=0x%02x enabled=%d configured=%d",
+                slot, hour, min, days, (int)enabled, (int)configured);
+    }
+
+    if (any_changed) {
+        schedule_next_alarm();
+        if (s_menu_layer) {
+            menu_layer_reload_data(s_menu_layer);
+        }
+    }
+}
+
+static void appmsg_inbox_dropped(AppMessageResult reason, void *context) {
+    // Fires if the inbox buffer overflowed — most likely APPMSG_INBOX_SIZE too small
+    APP_LOG(APP_LOG_LEVEL_ERROR, "AppMsg inbox dropped, reason: %d", (int)reason);
+}
+
 // ─── MenuLayer Callbacks ──────────────────────────────────────────
 
 static uint16_t cb_num_rows(MenuLayer *layer, uint16_t section, void *ctx) {
@@ -342,6 +445,15 @@ static void main_window_unload(Window *window) {
 static void init(void) {
     // Load alarms and persisted wakeup id from flash
     alarms_load();
+
+    // ── AppMessage: open the channel and register callbacks ───────
+    // app_message_open() allocates the inbox and outbox buffers.
+    // Must be called before any send/receive can happen.
+    // The sizes (in bytes) must be large enough to hold the largest
+    // message we expect; 128 bytes covers our 16 key-value pairs comfortably.
+    app_message_register_inbox_received(appmsg_inbox_received);
+    app_message_register_inbox_dropped(appmsg_inbox_dropped);
+    app_message_open(APPMSG_INBOX_SIZE, APPMSG_OUTBOX_SIZE);
 
     // Register handler for wakeups that fire while the app is already open
     wakeup_service_subscribe(wakeup_handler);
