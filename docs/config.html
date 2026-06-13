@@ -103,6 +103,9 @@
       text-align: center;
     }
     .time-select:focus { border-bottom-color: #007aff; }
+    /* Hour right-aligned, minute left-aligned — colon acts as visual centre */
+    .time-select-hour   { text-align: right;  text-align-last: right;  }
+    .time-select-minute { text-align: left;   text-align-last: left;   }
     .time-colon {
       font-size: 28px; font-weight: 200; color: #1c1c1e;
       /* Nudge down slightly to align with select text baseline */
@@ -216,7 +219,7 @@ function loadFromURL() {
 // ── Build hour options (00–23) ────────────────────────────────────
 function buildHourSelect(index, currentHour) {
   var sel = document.createElement('select');
-  sel.className = 'time-select';
+  sel.className = 'time-select time-select-hour';
   sel.id = 'hour-' + index;
   for (var h = 0; h < 24; h++) {
     var opt = document.createElement('option');
@@ -232,7 +235,7 @@ function buildHourSelect(index, currentHour) {
 // ── Build minute options (00–59) ──────────────────────────────────
 function buildMinuteSelect(index, currentMinute) {
   var sel = document.createElement('select');
-  sel.className = 'time-select';
+  sel.className = 'time-select time-select-minute';
   sel.id = 'min-' + index;
   for (var m = 0; m < 60; m++) {
     var opt = document.createElement('option');
@@ -332,7 +335,7 @@ function buildCard(index) {
   presetsRow.className = 'presets-row';
 
   var presetsLbl = document.createElement('label');
-  presetsLbl.textContent = 'Quick set';
+  presetsLbl.textContent = 'Set repeat';
 
   var presetBtns = document.createElement('div');
   presetBtns.className = 'preset-buttons';
@@ -340,7 +343,8 @@ function buildCard(index) {
   [
     { label: 'Every day', days: PRESET_DAILY },
     { label: 'Weekdays',  days: PRESET_WEEKDAYS },
-    { label: 'Weekend',   days: PRESET_WEEKEND }
+    { label: 'Weekend',   days: PRESET_WEEKEND },
+    { label: 'No repeat', days: 0 }
   ].forEach(function(p) {
     var btn = document.createElement('button');
     btn.className = 'preset-btn';
@@ -381,10 +385,12 @@ function buildCard(index) {
   daysRow.appendChild(dayBtns);
 
   // ── Assemble ──────────────────────────────────────────────────────
+  // Presets sit below the day buttons so the primary controls (time + days)
+  // are grouped together, and the shortcuts are a secondary affordance below.
   card.appendChild(header);
   card.appendChild(timeRow);
-  card.appendChild(presetsRow);
   card.appendChild(daysRow);
+  card.appendChild(presetsRow);
   return card;
 }
 
