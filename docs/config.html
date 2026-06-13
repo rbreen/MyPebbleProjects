@@ -468,7 +468,7 @@ function saveAndClose() {
   dbg('JSON length: ' + json.length + ' chars');
 
   var encoded = encodeURIComponent(json);
-  var url = 'pebblekit://close?result=' + encoded;
+  var url = 'pebblekit://close#' + encoded;
   dbg('URL length: ' + url.length + ' chars');
   dbg('URL prefix: ' + url.substring(0, 40));
 
