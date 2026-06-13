@@ -32,14 +32,13 @@
       border-radius: 12px;
       padding: 16px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      /* No disabled state on the card itself — all fields stay editable */
     }
 
     .alarm-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 12px;
+      margin-bottom: 14px;
     }
     .alarm-label {
       font-size: 13px; font-weight: 600; color: #8e8e93;
@@ -66,25 +65,57 @@
     }
     .toggle input:checked ~ .toggle-thumb { left: 22px; }
 
-    /* Time input */
-    .time-row { margin-bottom: 12px; }
-    .time-row label { display: block; font-size: 13px; color: #8e8e93; margin-bottom: 4px; }
-    .time-input {
-      width: 100%; font-size: 32px; font-weight: 200;
-      font-variant-numeric: tabular-nums;
-      border: none; border-bottom: 1.5px solid #e5e5ea;
-      background: transparent; color: #1c1c1e;
-      padding: 4px 0 6px; outline: none;
+    /* ── Time selects ────────────────────────────────────────────────
+       Two <select> dropdowns replace <input type="time">.
+       Reason: type="time" on iOS shows a native drum-roll picker with
+       locale-dependent buttons (e.g. "Herstel" in Dutch = Clear) and
+       unpredictable default-value behaviour. Selects render identically
+       on iOS, Android, and desktop with no surprise interactions.       */
+    .time-row {
+      margin-bottom: 14px;
     }
-    .time-input:focus { border-bottom-color: #007aff; }
+    .time-row > label {
+      display: block; font-size: 13px; color: #8e8e93; margin-bottom: 6px;
+    }
+    .time-selects {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .time-select {
+      /* Grow to fill available space equally */
+      flex: 1;
+      /* Large, clear text matching the old time display style */
+      font-size: 28px;
+      font-weight: 200;
+      font-variant-numeric: tabular-nums;
+      color: #1c1c1e;
+      /* Minimal border — let the OS style the select chrome */
+      border: none;
+      border-bottom: 1.5px solid #e5e5ea;
+      border-radius: 0;
+      background: transparent;
+      padding: 4px 2px 6px;
+      outline: none;
+      /* Remove default arrow on some browsers; keeps the look clean */
+      -webkit-appearance: none;
+      appearance: none;
+      text-align: center;
+    }
+    .time-select:focus { border-bottom-color: #007aff; }
+    .time-colon {
+      font-size: 28px; font-weight: 200; color: #1c1c1e;
+      /* Nudge down slightly to align with select text baseline */
+      padding-bottom: 4px;
+      flex-shrink: 0;
+    }
 
-    /* ── Presets row ─────────────────────────────────────────────── */
+    /* ── Presets ─────────────────────────────────────────────────── */
     .presets-row { margin-bottom: 10px; }
-    .presets-row label { display: block; font-size: 13px; color: #8e8e93; margin-bottom: 6px; }
+    .presets-row > label { display: block; font-size: 13px; color: #8e8e93; margin-bottom: 6px; }
     .preset-buttons { display: flex; gap: 6px; }
     .preset-btn {
-      flex: 1;
-      height: 30px;
+      flex: 1; height: 30px;
       border-radius: 8px;
       border: 1.5px solid #007aff;
       background: #fff;
@@ -95,9 +126,8 @@
     .preset-btn:active { background: #007aff; color: #fff; }
 
     /* ── Day buttons ─────────────────────────────────────────────── */
-    /* Week starts Monday; days rendered Mo Tu We Th Fr Sa Su */
     .days-row { margin-bottom: 4px; }
-    .days-row label { display: block; font-size: 13px; color: #8e8e93; margin-bottom: 8px; }
+    .days-row > label { display: block; font-size: 13px; color: #8e8e93; margin-bottom: 8px; }
     .day-buttons { display: flex; gap: 6px; }
     .day-btn {
       flex: 1; min-width: 34px; height: 36px;
@@ -119,7 +149,7 @@
       cursor: pointer; transition: opacity 0.15s;
     }
     .btn:active { opacity: 0.8; }
-    .btn-primary { background: #007aff; color: #fff; }
+    .btn-primary   { background: #007aff; color: #fff; }
     .btn-secondary { background: #e5e5ea; color: #3a3a3c; }
   </style>
 </head>
@@ -139,8 +169,8 @@
 
 <script>
 // ── Day definitions — week starts Monday ──────────────────────────
-// Display order: Mo Tu We Th Fr Sa Su
-// Bit positions still match the watch bitmask: bit0=Sun … bit6=Sat
+// Display order: Mo Tu We Th Fr Sa Su (Sa/Su adjacent on the right)
+// Bit positions match the watch bitmask: bit0=Sun … bit6=Sat
 var DAYS_DISPLAY = [
   { label: 'Mo', bit: 1 },
   { label: 'Tu', bit: 2 },
@@ -152,12 +182,12 @@ var DAYS_DISPLAY = [
 ];
 
 var PRESET_DAILY    = 0x7F;  // all 7 bits
-var PRESET_WEEKDAYS = 0x3E;  // Mo-Fr: bits 1-5
+var PRESET_WEEKDAYS = 0x3E;  // Mo–Fr: bits 1–5
 var PRESET_WEEKEND  = 0x41;  // Sa+Su: bits 6+0
 
-// ── State ──────────────────────────────────────────────────────────
-var alarms = emptyAlarms();
-var originalAlarms = emptyAlarms(); // snapshot of watch state for Revert
+// ── State ─────────────────────────────────────────────────────────
+var alarms         = emptyAlarms();
+var originalAlarms = emptyAlarms();  // watch snapshot — used by Revert
 
 function emptyAlarms() {
   var arr = [];
@@ -168,7 +198,6 @@ function emptyAlarms() {
 }
 
 // ── Load from URL parameter ───────────────────────────────────────
-// pebble-js-app.js passes current watch state as ?alarms=<JSON>
 function loadFromURL() {
   var params = new URLSearchParams(window.location.search);
   var raw = params.get('alarms');
@@ -177,7 +206,6 @@ function loadFromURL() {
     var parsed = JSON.parse(decodeURIComponent(raw));
     if (Array.isArray(parsed) && parsed.length === 5) {
       alarms = parsed;
-      // Deep-copy for the revert function
       originalAlarms = JSON.parse(JSON.stringify(parsed));
     }
   } catch(e) {
@@ -185,7 +213,39 @@ function loadFromURL() {
   }
 }
 
-// ── Render ────────────────────────────────────────────────────────
+// ── Build hour options (00–23) ────────────────────────────────────
+function buildHourSelect(index, currentHour) {
+  var sel = document.createElement('select');
+  sel.className = 'time-select';
+  sel.id = 'hour-' + index;
+  for (var h = 0; h < 24; h++) {
+    var opt = document.createElement('option');
+    opt.value = h;
+    opt.textContent = pad(h);
+    if (h === currentHour) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', makeHandler(index, onHourChange));
+  return sel;
+}
+
+// ── Build minute options (00–59) ──────────────────────────────────
+function buildMinuteSelect(index, currentMinute) {
+  var sel = document.createElement('select');
+  sel.className = 'time-select';
+  sel.id = 'min-' + index;
+  for (var m = 0; m < 60; m++) {
+    var opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = pad(m);
+    if (m === currentMinute) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', makeHandler(index, onMinuteChange));
+  return sel;
+}
+
+// ── Render all cards ──────────────────────────────────────────────
 function renderCards() {
   var list = document.getElementById('alarmList');
   list.innerHTML = '';
@@ -200,10 +260,7 @@ function buildCard(index) {
   card.className = 'alarm-card';
   card.id = 'card-' + index;
 
-  // ── Header: label + enabled toggle ───────────────────────────────
-  // Change 1: label stays "Alarm N" — no user-editable names for now
-  //           (persistent storage has room but AppMessage wire format
-  //            would need extra keys; deferred to a later step)
+  // ── Header: "Alarm N" + enabled toggle ───────────────────────────
   var header = document.createElement('div');
   header.className = 'alarm-header';
 
@@ -241,29 +298,36 @@ function buildCard(index) {
   header.appendChild(lbl);
   header.appendChild(toggleWrap);
 
-  // ── Time input ────────────────────────────────────────────────────
-  // Change 6: time field is always editable regardless of enabled state
+  // ── Time: two selects + colon separator ──────────────────────────
+  // Using <select> instead of <input type="time"> for cross-platform
+  // consistency. The native time picker on iOS has locale-dependent
+  // control labels (Dutch "Herstel" = Clear) and jumps to the current
+  // time when cleared, which is confusing. Selects always start at the
+  // stored value and have no hidden platform-specific behaviour.
   var timeRow = document.createElement('div');
   timeRow.className = 'time-row';
 
   var timeLbl = document.createElement('label');
   timeLbl.textContent = 'Time (24h)';
-  timeLbl.htmlFor = 'time-' + index;
 
-  var timeInput = document.createElement('input');
-  timeInput.type = 'time';
-  timeInput.className = 'time-input';
-  timeInput.id = 'time-' + index;
-  timeInput.value = pad(a.hour) + ':' + pad(a.minute);
-  timeInput.addEventListener('change', makeHandler(index, onTimeChange));
+  var timeSelects = document.createElement('div');
+  timeSelects.className = 'time-selects';
+
+  var colon = document.createElement('span');
+  colon.className = 'time-colon';
+  colon.textContent = ':';
+
+  timeSelects.appendChild(buildHourSelect(index, a.hour));
+  timeSelects.appendChild(colon);
+  timeSelects.appendChild(buildMinuteSelect(index, a.minute));
 
   timeRow.appendChild(timeLbl);
-  timeRow.appendChild(timeInput);
+  timeRow.appendChild(timeSelects);
 
-  // ── Presets row ──────────────────────────────────────────────────
-  // Change 4: preset buttons are write-only shortcuts.
-  // Tapping one stamps its bitmask onto the day buttons — no "active" state
-  // on the presets themselves. Un-selecting individual days afterward is fine.
+  // ── Presets: write-only shortcuts ────────────────────────────────
+  // Tapping stamps a bitmask onto the day buttons. No active/selected
+  // state on the preset buttons themselves — no logic needed to detect
+  // which preset "matches" the current day selection.
   var presetsRow = document.createElement('div');
   presetsRow.className = 'presets-row';
 
@@ -273,12 +337,11 @@ function buildCard(index) {
   var presetBtns = document.createElement('div');
   presetBtns.className = 'preset-buttons';
 
-  var presets = [
+  [
     { label: 'Every day', days: PRESET_DAILY },
     { label: 'Weekdays',  days: PRESET_WEEKDAYS },
     { label: 'Weekend',   days: PRESET_WEEKEND }
-  ];
-  presets.forEach(function(p) {
+  ].forEach(function(p) {
     var btn = document.createElement('button');
     btn.className = 'preset-btn';
     btn.textContent = p.label;
@@ -291,15 +354,13 @@ function buildCard(index) {
   presetsRow.appendChild(presetsLbl);
   presetsRow.appendChild(presetBtns);
 
-  // ── Day buttons — week starts Monday ─────────────────────────────
-  // Change 2: order is Mo Tu We Th Fr Sa Su (Sa/Su adjacent on the right)
-  // Change 3: "Fire once" checkbox removed — days=0 already means DAYS_ONCE
-  //           on the watch. With no days selected the alarm fires once.
+  // ── Day buttons: Mo Tu We Th Fr Sa Su ────────────────────────────
   var daysRow = document.createElement('div');
   daysRow.className = 'days-row';
 
   var daysLbl = document.createElement('label');
-  daysLbl.textContent = 'Repeat on';
+  // Hint to the user that "no days selected" means fire-once
+  daysLbl.textContent = 'Repeat on (none = once)';
 
   var dayBtns = document.createElement('div');
   dayBtns.className = 'day-buttons';
@@ -332,20 +393,17 @@ function buildCard(index) {
 function onEnabledChange(index) {
   var chk = document.getElementById('enabled-' + index);
   alarms[index].enabled = chk.checked;
-  // If enabling a slot that has no time set yet, default to 07:00
-  if (chk.checked && alarms[index].hour === 0 && alarms[index].minute === 0) {
-    alarms[index].hour = 7;
-    document.getElementById('time-' + index).value = '07:00';
-  }
   document.getElementById('togglelabel-' + index).textContent = chk.checked ? 'On' : 'Off';
+  // No default-time injection — selects already show 00:00 clearly,
+  // and the user can simply scroll to the time they want.
 }
 
-function onTimeChange(index) {
-  var val = document.getElementById('time-' + index).value;
-  if (!val) return;
-  var parts = val.split(':');
-  alarms[index].hour   = parseInt(parts[0], 10);
-  alarms[index].minute = parseInt(parts[1], 10);
+function onHourChange(index) {
+  alarms[index].hour = parseInt(document.getElementById('hour-' + index).value, 10);
+}
+
+function onMinuteChange(index) {
+  alarms[index].minute = parseInt(document.getElementById('min-' + index).value, 10);
 }
 
 function onDayToggle(index, bit) {
@@ -353,7 +411,6 @@ function onDayToggle(index, bit) {
   refreshDayButtons(index);
 }
 
-// Change 4: preset stamps the bitmask, refreshes day buttons, nothing else
 function applyPreset(index, days) {
   alarms[index].days = days;
   refreshDayButtons(index);
@@ -367,16 +424,13 @@ function refreshDayButtons(index) {
   });
 }
 
-// ── Revert ────────────────────────────────────────────────────────
-// Change 5: restores the alarm state that was passed in from the watch
-// when the page loaded. Useful if the user wants to discard edits, or
-// after editing on the watch while the page was open.
+// ── Revert to watch state ─────────────────────────────────────────
 function revertToWatch() {
   alarms = JSON.parse(JSON.stringify(originalAlarms));
   renderCards();
 }
 
-// ── Save and return ───────────────────────────────────────────────
+// ── Save and return to PebbleKit JS ──────────────────────────────
 function saveAndClose() {
   var result = { alarms: alarms };
   document.location = 'pebblekit://close?result=' + encodeURIComponent(JSON.stringify(result));
@@ -385,7 +439,6 @@ function saveAndClose() {
 // ── Utilities ─────────────────────────────────────────────────────
 function pad(n) { return n < 10 ? '0' + n : '' + n; }
 
-// Closure helper — avoids the classic loop-index capture bug
 function makeHandler(index, fn) {
   return function() { fn(index); };
 }
