@@ -1,0 +1,21 @@
+{
+    "author": "remco@remcobreen.nl",
+    "dependencies": {},
+    "keywords": [],
+    "name": "wakemeup",
+    "pebble": {
+        "displayName": "WakeMeUp",
+        "enableMultiJS": true,
+        "messageKeys": [],
+        "projectType": "native",
+        "resources": {
+            "media": []
+        },
+        "sdkVersion": "3",
+        "uuid": "2d28966c-8c1a-4f66-be07-7740d1663b95",
+        "watchapp": {
+            "watchface": false
+        }
+    },
+    "version": "1.0.0"
+}
