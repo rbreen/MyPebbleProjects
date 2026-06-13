@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>WakeMeUp — Configure Alarms v11</title>
+  <title>WakeMeUp — Configure Alarms v15</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -483,9 +483,9 @@ function saveAndClose() {
 
   // Method 2: window.location.href
   setTimeout(function() {
-    dbg('Trying method 2: window.location.href');
+    dbg('Trying method 2: document.location =');
     try {
-      window.location.href = url;
+      document.location = url;
       dbg('Method 2: no exception thrown');
     } catch(e) {
       dbg('Method 2 ERROR: ' + e);
