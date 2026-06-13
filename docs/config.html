@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>WakeMeUp — Configure Alarms v9</title>
+  <title>WakeMeUp — Configure Alarms v11</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -160,8 +160,19 @@
 
 <header>
   <h1>WakeMeUp</h1>
-  <p>Configure up to 5 alarms &nbsp;·&nbsp; v9</p>
+  <p>Configure up to 5 alarms &nbsp;·&nbsp; v11</p>
 </header>
+
+<!-- Debug overlay — shows what saveAndClose() is doing in real time -->
+<div id="debugBox" style="
+  display:none;
+  position:fixed; top:0; left:0; right:0;
+  background:#1c1c1e; color:#34c759;
+  font-family:monospace; font-size:12px;
+  padding:12px; z-index:9999;
+  max-height:50vh; overflow-y:auto;
+  border-bottom:2px solid #34c759;
+"></div>
 
 <div class="alarm-list" id="alarmList"></div>
 
@@ -436,15 +447,71 @@ function revertToWatch() {
   renderCards();
 }
 
+// ── Debug overlay ─────────────────────────────────────────────────
+// Logs messages to a visible on-screen box so we can trace saveAndClose()
+// without needing an external log connection.
+function dbg(msg) {
+  var box = document.getElementById('debugBox');
+  box.style.display = 'block';
+  var line = document.createElement('div');
+  line.textContent = new Date().toISOString().substr(11,8) + ' ' + msg;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
 // ── Save and return to PebbleKit JS ──────────────────────────────
-// IMPORTANT: must use window.location.replace() not document.location =
-// The rePebble UIWebView intercepts navigation to pebblekit://close
-// to fire the webviewclosed event in PebbleKit JS.  Assignment to
-// document.location is not reliably caught; replace() is.
 function saveAndClose() {
+  dbg('saveAndClose() called');
+
   var result = { alarms: alarms };
-  var url = 'pebblekit://close?result=' + encodeURIComponent(JSON.stringify(result));
-  window.location.replace(url);
+  var json = JSON.stringify(result);
+  dbg('JSON length: ' + json.length + ' chars');
+
+  var encoded = encodeURIComponent(json);
+  var url = 'pebblekit://close?result=' + encoded;
+  dbg('URL length: ' + url.length + ' chars');
+  dbg('URL prefix: ' + url.substring(0, 40));
+
+  // Method 1: window.location.replace()
+  dbg('Trying method 1: window.location.replace()');
+  try {
+    window.location.replace(url);
+    dbg('Method 1: no exception thrown');
+  } catch(e) {
+    dbg('Method 1 ERROR: ' + e);
+  }
+
+  // Method 2: window.location.href
+  setTimeout(function() {
+    dbg('Trying method 2: window.location.href');
+    try {
+      window.location.href = url;
+      dbg('Method 2: no exception thrown');
+    } catch(e) {
+      dbg('Method 2 ERROR: ' + e);
+    }
+  }, 200);
+
+  // Method 3: hidden <a> click
+  setTimeout(function() {
+    dbg('Trying method 3: anchor click');
+    try {
+      var a = document.createElement('a');
+      a.href = url;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      dbg('Method 3: click fired');
+    } catch(e) {
+      dbg('Method 3 ERROR: ' + e);
+    }
+  }, 400);
+
+  // If we reach here after 600ms the page is still open — all methods failed
+  setTimeout(function() {
+    dbg('STILL OPEN after 600ms — none of the 3 methods closed the page');
+    dbg('Try: navigate away manually or check rePebble version');
+  }, 600);
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
