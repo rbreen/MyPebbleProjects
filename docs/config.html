@@ -437,9 +437,14 @@ function revertToWatch() {
 }
 
 // ── Save and return to PebbleKit JS ──────────────────────────────
+// IMPORTANT: must use window.location.replace() not document.location =
+// The rePebble UIWebView intercepts navigation to pebblekit://close
+// to fire the webviewclosed event in PebbleKit JS.  Assignment to
+// document.location is not reliably caught; replace() is.
 function saveAndClose() {
   var result = { alarms: alarms };
-  document.location = 'pebblekit://close?result=' + encodeURIComponent(JSON.stringify(result));
+  var url = 'pebblekit://close?result=' + encodeURIComponent(JSON.stringify(result));
+  window.location.replace(url);
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
