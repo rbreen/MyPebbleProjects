@@ -1,11 +1,41 @@
-# WakeMeUp — Pebble Time alarm app — Project Brief
+# WakeMeUp — Pebble Time Alarm App — Project Brief
+
+Last updated: 2026-06-14 11:18 CET
+
+---
+
+# Project Goal
+
+Build a reliable alarm application for Pebble Time using the current RePebble ecosystem. It features multiple alarms that can be configured using a configuration page on the users phone because direct editing on the watch is awkward. The app will only occupy a single PebbleOS wakeup_schedule slot, see wakeup strategy, it is currently setup for 5 alarms that can fire once or repeat on certain days in the week, see data model, but a future idea is to make that flexible, the inital condition is a single alarm at 07:00 non-repeating and unarmed but you can modify that singele alarm or add additional alarms (up to 10) but that should also allow deleteing alarms.  
+
+The project is developed incrementally. Each step should be fully working before moving on to the next. Currently we are stuck at communicating the 5 alarms back to the watch, the observed behavior is that the configuration page is not closed in the RePebble app and nothing is communicated, this is probably due to the used closing and encoding of the data that is not exactly according to RePebble documentation and examples.
+
+Current focus:
+
+- Reliable alarm scheduling
+- Persistent alarm storage
+- Phone-based configuration
+- Support for on-watch enabling/disabling of configured alarms
+
+Potential future enhancements:
+
+- Variable number of alarms
+- Allowing to add alarm slots
+- But also Alarm deletion
+- Naming the alarms, instead of Alarm 1, Alarm 2, etc.
+- Support the same editing (change the time, repeating days, adding and removing alarm slots) on the watch itself.
+
+These items are intentionally deferred until configuration synchronization is fully operational.
+
+---
 
 ## Tech stack
 - **Watch app:** Pebble C SDK (C language, Basalt platform)
 - **Phone config UI:** PebbleKit JS + HTML config page hosted on GitHub Pages
 - **IDE:** CloudPebble — browser-based, no local install
-- **User's phone:** iPhone with rePebble app installed
+- **User's phone:** iPhone with rePebble app installed but the implementation should be phone OS agnostic (IOS / Android / ....?)
 - **Config page URL:** `https://rbreen.github.io/MyPebbleProjects/config.html`
+- **Project repository:** 'https://github.com/rbreen/MyPebbleProjects/tree/master'
 
 ## App design decisions
 - **Max 5 alarms** — user-visible limit; keeps the list manageable
@@ -42,7 +72,7 @@ typedef struct {
     uint8_t  hour;       // 0-23
     uint8_t  minute;     // 0-59
     uint8_t  days;       // bitmask; 0 = once
-    bool     enabled;
+    bool     armed;
     bool     configured; // false = empty slot (not just disarmed)
 } Alarm;
 
@@ -79,18 +109,18 @@ To be a good citizen, WakeMeUp uses **exactly one wakeup slot** at all times:
 
 ## Missed wakeup policy
 
-`notify_if_missed=false` is passed to `wakeup_schedule()`.
+`notify_if_missed=true` is passed to `wakeup_schedule()`.
 
 **Rationale:** if the watch battery dies overnight and the user charges it in
-the morning, they are already awake — firing a stale alarm is wrong. By
-discarding missed wakeups at the OS level, we avoid this. When the user next
-opens the app (or the watch boots), `schedule_next_alarm()` runs, computes
+the morning, they are already awake — firing a stale alarm is wrong. However that
+trigger should run the `schedule_next_alarm()`, which computes
 all fire times from the current moment, and schedules the next upcoming alarm
-cleanly. No special "missed alarm" detection code is needed.
+cleanly.
 
 ## Scheduling logic — `alarm_next_fire_time()`
 
-Given an alarm's `hour`, `minute`, and `days` bitmask:
+Given an alarm's 'enabled', `hour`, `minute`, and `days` bitmask:
+- Only consider alarms that are enabled or 'armed'
 - Walk forward day-by-day (up to 7 days) from *now*
 - For each candidate day check: is this weekday's bit set? (DAYS_ONCE matches any day)
 - Build a `struct tm` for that day at hour:minute:00, run through `mktime()`
@@ -102,7 +132,7 @@ Given an alarm's `hour`, `minute`, and `days` bitmask:
 | File | Where it runs | Role |
 |------|--------------|------|
 | `docs/config.html` | iPhone browser (inside rePebble) | UI: time selects, day toggles, presets, save/revert |
-| `src/pkjs/pebble-js-app.js` | PebbleKit JS (inside rePebble app) | Bridge: opens config page, ferries data over Bluetooth |
+| `src/pkjs/index.js` | PebbleKit JS (inside rePebble app) | Bridge: opens config page, ferries data over Bluetooth |
 | `src/c/main.c` additions | Watch | Receives AppMessage, writes alarms to persist, reschedules |
 
 ### Data flow
@@ -113,9 +143,31 @@ config.html  -->  closes with result URL  -->  pebble-js-app.js  -->  AppMessage
 ```
 
 The config page communicates its result by closing itself with a special URL:
-`pebblekit://close?result=<JSON>`. PebbleKit JS intercepts that URL, parses
+`pebblekit://close#<JSON>`. PebbleKit JS intercepts that URL, parses
 the JSON, and sends the data to the watch as AppMessage key-value pairs.
 The watch never talks to the internet directly.
+However this is the part we are currently struggling with.
+
+# RePebble Documentation Policy
+
+When documentation conflicts exist, prefer current RePebble documentation over:
+
+- Legacy Pebble documentation
+- Old forum posts
+- Historic SDK discussions
+
+Primary references:
+
+- https://developer.repebble.com/guides/
+- https://developer.repebble.com/examples/
+
+Relevant topics:
+
+- App Configuration
+- AppMessage
+- Clay
+- Persistent Storage
+- Wakeup API
 
 ### How current alarm state reaches the config page
 
@@ -129,13 +181,6 @@ reflects the watch state at the moment the page opens, not a live feed.
 **Revert button:** the page keeps a deep copy of the opening snapshot
 (`originalAlarms`). Tapping Revert restores this copy, discarding any edits.
 This is a local restore, not a re-fetch from the watch — see note below.
-
-**Why no live re-sync from inside the page:** the config page webview has no
-direct Pebble API access. The only communication channels are the opening URL
-parameter (watch→page) and the close URL (page→JS). A live re-sync would
-require closing and reopening the page, which is jarring UX. Since the hybrid
-model specifies that watch and phone are never edited simultaneously, the
-snapshot approach is sufficient.
 
 ### config.html UI decisions
 
@@ -205,15 +250,6 @@ on-flash data will be misread. Options:
 - Uninstall + reinstall from rePebble (clears storage)
 - Or bump the persist key range (e.g. use keys 10-15 for the next layout version)
 
-## Known SDK quirks
-
-- `wakeup_get_launch_wakeup_id()` does not exist — correct function is
-  `wakeup_get_launch_event(WakeupId *id, int32_t *cookie)` (two out-params).
-- CloudPebble builds for all platforms (Basalt, Aplite, Chalk/Gabbro) in one
-  pass. The emulator defaults to Chalk (round, 260×260). Basalt is the
-  primary target (rectangular, 144×168).
-- The PebbleKit JS webview on iOS uses UIWebView (older engine), not WKWebView.
-  Avoid modern JS APIs; stick to ES5.
 
 ## Build progress
 
@@ -222,7 +258,7 @@ on-flash data will be misread. Options:
 | 1 | done | Hello World skeleton — app lifecycle, Window, TextLayer |
 | 2 | done | MenuLayer alarm list — callbacks, struct, bitmask days, hardcoded data. Bug fixed: `days_to_string` custom-day loop was unreachable (early `return` removed). |
 | 3 | done | Persistent storage + single-slot Wakeup API scheduling |
-| 4 | done | Phone config page: `config.html` + `pebble-js-app.js` + AppMessage handler in `main.c` |
+| 4 | current | Phone config page: `config.html` + `pebble-js-app.js` + AppMessage handler in `main.c` |
 | 5 | next | On-watch alarm editor (number pickers + day toggles) |
 
 ## Style preferences
