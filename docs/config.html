@@ -480,7 +480,7 @@ function saveAndClose() {
   if (returnTo) {
     dbg('returnTo found: '+ returnTo);
     dbg('Lets go there with some data');
-    document.location = returnTo + encodeURIComponent(json);
+    document.location.href = returnTo + encodeURIComponent(json);
   } else {
     dbg("No return_to parameter found");
     console.error("No return_to parameter found");
