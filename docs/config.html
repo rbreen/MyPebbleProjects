@@ -227,6 +227,13 @@ function loadFromURL() {
   }
 }
 
+// Get the return address from the page header.
+
+function getQueryParam(name) {
+  var results = new RegExp('[\?&]' + name + '=([^&#]*)').exec(window.location.href);
+  return results ? decodeURIComponent(results[1]) : null;
+}
+
 // ── Build hour options (00–23) ────────────────────────────────────
 function buildHourSelect(index, currentHour) {
   var sel = document.createElement('select');
@@ -468,6 +475,17 @@ function saveAndClose() {
   dbg('JSON length: ' + json.length + ' chars');
 
   var encoded = encodeURIComponent(json);
+
+  var returnTo = getQueryParam('return_to');
+  if (returnTo) {
+    dbg('returnTo found: '+ returnTo);
+    dbg('Lets go there with some data');
+    document.location = returnTo + encodeURIComponent(json);
+  } else {
+    dbg("No return_to parameter found");
+    console.error("No return_to parameter found");
+  }
+  
   var url = 'pebblekit://close#' + encoded;
   dbg('URL length: ' + url.length + ' chars');
   dbg('URL prefix: ' + url.substring(0, 40));
