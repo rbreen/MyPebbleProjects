@@ -467,7 +467,7 @@ function getQueryParam(name, defaultValue) {
 function saveAndClose() {
   var result = { alarms: alarms };
   var return_to = getQueryParam('return_to', 'pebblejs://close#');
-  document.location = return_to + encodeURIComponent(JSON.stringify(result));
+  document.location.href = return_to + encodeURIComponent(JSON.stringify(result));
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
