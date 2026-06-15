@@ -6,7 +6,7 @@
 //   slot*3+2  → packed flags: bits 0-6 = days bitmask, bit 7 = enabled
 //   key 15    → handshake value 0x42
 
-var CONFIG_PAGE_URL = 'https://rbreen.github.io/MyPebbleProjects/config.html';
+var CONFIG_PAGE_URL = 'https://rbreen.github.io/WakeMeUp-Pebble/docs/config.html';
 
 // ── Alarm state cache ─────────────────────────────────────────────
 var currentAlarms = [
