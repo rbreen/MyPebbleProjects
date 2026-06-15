@@ -1,6 +1,6 @@
 # WakeMeUp — Pebble Time Alarm App — Project Brief
 
-Last updated: 2026-06-15 21:47 CET
+Last updated: 2026-06-15 22:10 CET
 
 ---
 
@@ -18,15 +18,12 @@ modify it or enable up to all 5 slots via the phone config page.
 The project is developed incrementally. Each step must be fully working before
 moving on to the next.
 
-**Current status (Step 4):** The config page UI and PebbleKit JS bridge are
-implemented. The known bug is that tapping Save does not close the config page
-and no data reaches the watch. Root cause identified: `config.html` was
-navigating to `pebblekit://close#…` (wrong scheme). The correct mechanism,
-per the [RePebble static config guide](https://developer.rebble.io/guides/user-interfaces/app-configuration-static/),
-is to read the `return_to` query parameter that rePebble injects when it opens
-the page, and navigate to `return_to + encodeURIComponent(JSON.stringify(data))`.
-The default fallback when `return_to` is absent (e.g. desktop browser testing)
-is `pebblejs://close#`. This fix is the immediate next task.
+**Current status: Step 4 complete.** The full phone→watch configuration pipeline
+is working end-to-end: the config page opens pre-filled with the current watch
+state, the user edits alarms, tapping Save closes the page and passes data back
+to PebbleKit JS, which sends it to the watch over Bluetooth.
+
+**Next: Step 5** — on-watch alarm editor (number pickers + day toggles).
 
 **Potential future enhancements (all deferred):**
 - Variable number of alarm slots (current hard limit is 5)
@@ -199,25 +196,27 @@ When rePebble opens the config page via `Pebble.openURL(url)`, it appends a
 the current environment (real watch vs emulator). The config page **must** read
 this parameter and use it as the navigation target when saving.
 
-**Correct implementation in `config.html`:**
+**Confirmed working implementation in `config.html` (v17):**
 ```javascript
-function getQueryParam(variable, defaultValue) {
+function getQueryParam(name, defaultValue) {
   var query = location.search.substring(1);
   var vars = query.split('&');
   for (var i = 0; i < vars.length; i++) {
     var pair = vars[i].split('=');
-    if (pair[0] === variable) {
+    if (decodeURIComponent(pair[0]) === name) {
       return decodeURIComponent(pair[1]);
     }
   }
-  return defaultValue || false;
+  return defaultValue;
 }
 
 function saveAndClose() {
   var result = { alarms: alarms };
-  // Read the return URL injected by rePebble; fall back for desktop testing
+  // Read the return URL injected by rePebble; fall back for desktop testing.
+  // Use document.location.href (not document.location) — more reliable in
+  // rePebble's embedded WebView on iOS.
   var return_to = getQueryParam('return_to', 'pebblejs://close#');
-  document.location = return_to + encodeURIComponent(JSON.stringify(result));
+  document.location.href = return_to + encodeURIComponent(JSON.stringify(result));
 }
 ```
 
@@ -333,7 +332,7 @@ as **strings**, never numbers. Key 15 arrives as `payload["15"]`, not
 - **All fields always editable:** the enabled toggle arms/disarms only; time
   and day fields are never greyed out.
 - **Revert button** sits alongside Save at the bottom of the page.
-- **Debug overlay removed** once the close bug is fixed (it served its purpose).
+- **Debug overlay removed** in v17 — it served its purpose diagnosing the close bug.
 
 ---
 
@@ -359,8 +358,8 @@ legacy Pebble docs, old forum posts, or historic SDK discussions.
 | 1 | ✅ done | Hello World skeleton — app lifecycle, Window, TextLayer |
 | 2 | ✅ done | MenuLayer alarm list — callbacks, struct, bitmask days, hardcoded data. Bug fixed: `days_to_string` custom-day loop was unreachable (early `return` removed). |
 | 3 | ✅ done | Persistent storage + single-slot Wakeup API scheduling |
-| 4 | 🔧 current | Phone config page. Bug fix in progress: `saveAndClose()` must use `return_to` query param, not hardcoded `pebblekit://close#`. |
-| 5 | ⏳ next | On-watch alarm editor (number pickers + day toggles) |
+| 4 | ✅ done | Phone config page working end-to-end. Root cause of close bug: `pebblekit://close#` is the wrong scheme. Fix: read `return_to` param injected by rePebble, navigate via `document.location.href`. Also fixed: `CONFIG_PAGE_URL` in `index.js` updated to renamed repo. |
+| 5 | 🔧 current | On-watch alarm editor (number pickers + day toggles) |
 
 ---
 
