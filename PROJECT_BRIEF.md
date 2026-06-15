@@ -1,6 +1,6 @@
 # WakeMeUp — Pebble Time Alarm App — Project Brief
 
-Last updated: 2026-06-15 22:10 CET
+Last updated: 2026-06-15 22:59 CET
 
 ---
 
@@ -23,7 +23,7 @@ is working end-to-end: the config page opens pre-filled with the current watch
 state, the user edits alarms, tapping Save closes the page and passes data back
 to PebbleKit JS, which sends it to the watch over Bluetooth.
 
-**Next: Step 5** — on-watch alarm editor (number pickers + day toggles).
+**Next: Step 5** — on-watch alarm editor and onboarding screen (see Build progress).
 
 **Potential future enhancements (all deferred):**
 - Variable number of alarm slots (current hard limit is 5)
@@ -112,6 +112,7 @@ persist key range (e.g. use keys 10–15 for the next layout version).
 |-----|----------|
 | 0–4 | `Alarm` struct for slot 0–4 (`sizeof(Alarm)` bytes each) |
 | 5   | `int32_t s_active_wakeup_id` — the single live WakeupId, or -1 |
+| 6   | `uint8_t s_vibe_pattern` — global vibration pattern index (0 = short, 1 = double, 2 = long, 3 = persistent); default 1 |
 
 ---
 
@@ -351,7 +352,162 @@ legacy Pebble docs, old forum posts, or historic SDK discussions.
 
 ---
 
-## Build progress
+## Step 5 design — on-watch interaction model
+
+### Main alarm list — layout
+
+Row 0 is a **header row**, not an alarm slot. It displays the app title and a
+one-line reminder that configuration is done via the phone, e.g.:
+*"Configure alarms via the Pebble app"*. It scrolls out of view naturally as
+the user scrolls down through the alarm slots. Long-pressing Select on this row
+opens a help/about screen rather than an edit screen.
+
+Rows 1–5 correspond to alarm slots 0–4.
+
+### Main alarm list — button assignment
+
+| Button | Press type | Action |
+|--------|-----------|--------|
+| Up | Short | Scroll selection up |
+| Down | Short | Scroll selection down |
+| Select | Short | Toggle enabled/disabled on selected alarm (immediate: saves to persist + reschedules) |
+| Select | Long | Open edit screen for selected alarm (or help screen if header row selected) |
+| Back | Short | Exit app (reserved by OS) |
+| Back | Long | Power menu (reserved by OS) |
+
+**Short Select on an alarm row** is an atomic action — it writes to persist and
+calls `schedule_next_alarm()` immediately, since there is no edit session
+involved. This lets the user quickly arm/disarm an alarm with one press without
+entering the editor.
+
+**Short Select on the header row** does nothing (or could open help — TBD).
+
+**MenuLayer + custom long-press note:** MenuLayer installs its own click config
+via `menu_layer_set_click_config_onto_window()`. The Select long-press handler
+must be registered after that call so it supplements rather than replaces
+MenuLayer's built-in navigation. The exact pattern will be documented when
+Step 5 is implemented.
+
+### Edit screen — fields and layout
+
+Pushing the edit screen replaces the window stack with a simple scrollable list
+of fields for the selected alarm, in this order:
+
+1. **Enabled** — checkbox, toggled directly by Select press
+2. **Hour** — number field (0–23)
+3. **Minute** — number field (0–59)
+4. **Repeat days** — seven checkboxes: Mo Tu We Th Fr Sa Su
+   (none selected = `DAYS_ONCE`, fire once)
+
+If all fields don't fit on screen, the list scrolls naturally with Up/Down.
+
+### Edit screen — button behaviour
+
+Two modes exist within the edit screen: **navigate mode** and **edit mode**.
+
+**Navigate mode (default):**
+
+| Button | Action |
+|--------|--------|
+| Up | Move highlight to previous field |
+| Down | Move highlight to next field |
+| Select | On a checkbox field: toggle immediately. On a number field: enter edit mode. |
+| Back | Accept all changes, save to persist, call `schedule_next_alarm()`, return to alarm list |
+
+**Edit mode (active on a number field — hour or minute):**
+
+| Button | Action |
+|--------|--------|
+| Up | Increment value (wraps: 23→0 for hour, 59→0 for minute) |
+| Down | Decrement value (wraps: 0→23 for hour, 0→59 for minute) |
+| Select | Accept value, exit edit mode, return to navigate mode |
+| Back | Accept value, exit edit mode, save to persist, call `schedule_next_alarm()`, return to alarm list |
+
+The visual distinction between navigate mode and edit mode (e.g. highlight colour
+or an indicator) will be decided during implementation.
+
+### Save / persist strategy
+
+- **In-memory (`s_alarms[]`):** updated immediately as the user changes each
+  field in the editor. The alarm list reflects changes the moment the user
+  returns to it.
+- **Persist write + `schedule_next_alarm()`:** called once when the user presses
+  Back from the edit screen to the alarm list. This avoids hammering flash
+  storage on every Up/Down press (Pebble's persist API has finite write
+  endurance) and avoids rescheduling the wakeup mid-edit.
+- **Rationale for persist-on-return (not persist-on-app-exit):** the user may
+  want to set an alarm 1 minute from now for testing and remain in the app to
+  watch it fire. Persisting and rescheduling on return to the list means the
+  wakeup is live immediately after leaving the editor.
+
+### Header row — help screen and global settings
+
+Long-pressing Select on the header row opens a settings/help window. This
+serves two purposes:
+
+1. **Help text** — brief instructions: how to configure via the phone, the
+   config page URL, and a summary of watch controls.
+2. **Global settings** — app-wide preferences that apply to all alarms.
+   Currently the only candidate is the vibration pattern (see below).
+
+Short-pressing Select on the header row does nothing for now, reserving the
+possibility of an easter egg or future use.
+
+### Vibration pattern — global setting
+
+**What the Pebble Vibes API provides:**
+The vibration motor is on/off only — there is no intensity/strength control.
+What can be configured is the *pattern*: the sequence and duration of on/off
+pulses. Reference: [Vibes API](https://developer.rebble.io/docs/c/User_Interface/Vibes/)
+
+The API offers four built-in calls:
+- `vibes_short_pulse()` — one brief pulse
+- `vibes_long_pulse()` — one long pulse
+- `vibes_double_pulse()` — two brief pulses
+- `vibes_enqueue_custom_pattern(VibePattern)` — arbitrary on/off sequence,
+  each segment up to 10,000ms, e.g. `{ 200, 100, 400 }` = on 200ms, off 100ms, on 400ms
+
+There is no OS-level vibration setting — it is entirely per-app. The Pebble
+SDK guidelines recommend custom patterns specifically for user-configurable
+haptic feedback within an app.
+
+**Design decision: one global vibration pattern for all alarms** (not per-alarm).
+Per-alarm vibration is deferred; it would require an extra field in the `Alarm`
+struct and additional AppMessage keys.
+
+**Proposed selectable patterns** (exact list TBD during Step 5 implementation):
+
+| Name | Pattern | Use case |
+|------|---------|----------|
+| Short | single short pulse | Light sleeper / quiet wake |
+| Double | two short pulses | Default |
+| Long | single long pulse | Heavier sleeper |
+| Persistent | repeating pattern, e.g. `{ 500, 200, 500, 200, 500 }` | Heavy sleeper |
+
+**Storage:** the selected pattern index is stored in a new persist key (key 6).
+It is a global setting, not part of the `Alarm` struct.
+
+**Current code** in `wakeup_handler()` calls `vibes_long_pulse()` unconditionally.
+This will be replaced with a pattern lookup from the global setting in Step 5.
+
+---
+
+## Future: user documentation
+
+Once the app is stable, user-facing documentation will be generated from this
+project brief. Planned deliverables:
+
+- **In-app About/Help screen** — as described above
+- **App store description** — for the Rebble app store listing
+- **README / user guide** — GitHub Pages or repository README, covering
+  installation, first-time setup, phone configuration, and on-watch controls
+
+These will be authored from the project brief so documentation stays consistent
+with the implementation. No work planned until Step 5 is complete.
+
+---
+
+
 
 | Step | Status | Summary |
 |------|--------|---------|
@@ -359,7 +515,7 @@ legacy Pebble docs, old forum posts, or historic SDK discussions.
 | 2 | ✅ done | MenuLayer alarm list — callbacks, struct, bitmask days, hardcoded data. Bug fixed: `days_to_string` custom-day loop was unreachable (early `return` removed). |
 | 3 | ✅ done | Persistent storage + single-slot Wakeup API scheduling |
 | 4 | ✅ done | Phone config page working end-to-end. Root cause of close bug: `pebblekit://close#` is the wrong scheme. Fix: read `return_to` param injected by rePebble, navigate via `document.location.href`. Also fixed: `CONFIG_PAGE_URL` in `index.js` updated to renamed repo. |
-| 5 | 🔧 current | On-watch alarm editor (number pickers + day toggles) |
+| 5 | 🔧 current | On-watch alarm editor (Select long-press → edit window, number pickers for hour/minute, day toggles) + onboarding/instructions screen |
 
 ---
 
