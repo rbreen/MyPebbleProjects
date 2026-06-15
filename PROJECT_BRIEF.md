@@ -1,6 +1,6 @@
 # WakeMeUp — Pebble Time Alarm App — Project Brief
 
-Last updated: 2026-06-15 22:59 CET
+Last updated: 2026-06-15 23:18 CET
 
 ---
 
@@ -23,13 +23,16 @@ is working end-to-end: the config page opens pre-filled with the current watch
 state, the user edits alarms, tapping Save closes the page and passes data back
 to PebbleKit JS, which sends it to the watch over Bluetooth.
 
-**Next: Step 5** — on-watch alarm editor and onboarding screen (see Build progress).
+**Next: Step 5** — alarm firing screen: full-screen dismiss window, repeating
+vibration pattern, global pattern setting. On-watch editing follows in Step 6.
 
 **Potential future enhancements (all deferred):**
 - Variable number of alarm slots (current hard limit is 5)
 - Adding and deleting alarm slots
 - Naming alarms (instead of "Alarm 1", "Alarm 2", etc.)
-- On-watch alarm editing (time, repeat days, add/delete slots)
+- On-watch alarm editing (time, repeat days, add/delete slots) — Step 6
+- Snooze with configurable duration — Step 7
+- Per-alarm vibration pattern (currently global only) — possible future step
 
 ---
 
@@ -352,9 +355,93 @@ legacy Pebble docs, old forum posts, or historic SDK discussions.
 
 ---
 
-## Step 5 design — on-watch interaction model
+## Step 5 design — alarm firing screen
 
-### Main alarm list — layout
+### Why this comes before on-watch editing
+
+The alarm firing experience is core functionality — an alarm app that fires but
+cannot be dismissed is not usable. On-watch editing is a convenience feature.
+Additionally, fixing the firing screen first means the 1-minute test scenario
+(schedule an alarm, stay in the app, watch it fire) works correctly before
+Step 6 editing is built.
+
+### Current state (incomplete)
+
+`wakeup_handler()` currently calls `vibes_long_pulse()` once and returns.
+There is no screen shown, no repeating vibration, and no dismiss mechanism.
+
+### Firing screen design
+
+When an alarm fires, a full-screen `Window` pushes onto the stack showing:
+- The alarm time (large text, readable when half-asleep)
+- "Alarm!" or similar label
+- A brief instruction: "Press any button to dismiss"
+
+The window remains on screen until the user dismisses it.
+
+### Repeating vibration
+
+A wakeup event fires once — the OS does not repeat it. The app must drive
+a repeating vibration pattern itself using a `AppTimer` that re-enqueues
+the chosen pattern at a fixed interval (e.g. every 2–3 seconds) until dismissed.
+
+The global vibration pattern setting (see below) determines which pattern plays.
+
+### Dismiss behaviour
+
+| Button | Action |
+|--------|--------|
+| Select | Stop vibration, pop firing window, return to alarm list |
+| Up | Stop vibration, pop firing window, return to alarm list |
+| Down | Stop vibration, pop firing window, return to alarm list |
+| Back | Stop vibration, pop firing window, exit app (Back is reserved by OS but `vibes_cancel()` must be called before the window pops naturally) |
+
+All four buttons silence the alarm. Back exits the app as normal via OS
+behaviour, but `vibes_cancel()` must be called in the window's `unload`
+handler to ensure vibration stops even if the window is popped by the OS
+(e.g. incoming notification).
+
+**No snooze in Step 5.** Snooze is deferred to Step 7 (see Build progress).
+
+### Global vibration pattern setting
+
+Stored in persist key 6 as a `uint8_t` index. Default is pattern index 1
+(Standard), which approximates the built-in Pebble alarm app feel.
+
+Proposed patterns (exact durations to be tuned during implementation):
+
+| Index | Name | Pattern (ms on/off) | Character |
+|-------|------|---------------------|-----------|
+| 0 | Gentle | `{ 200, 200, 200 }` | Two soft taps — least disruptive |
+| 1 | Standard | `{ 500, 200, 500 }` | Default — similar to built-in Pebble alarm |
+| 2 | Double burst | `{ 600, 200, 600, 400, 600, 200, 600 }` | Two pairs with a gap |
+| 3 | Escalating | `{ 100, 100, 200, 100, 400, 100, 600 }` | Builds urgency on each repeat |
+| 4 | Persistent | `{ 800, 300, 800, 300, 800, 300, 800, 300, 800 }` | Long and relentless |
+
+The escalating pattern is worth highlighting: because the `AppTimer` repeats the
+full pattern, each repeat starts soft and builds — mimicking the experience of a
+gradually intensifying alarm. This is the approach used by several well-regarded
+Pebble alarm apps.
+
+**Pattern selection UI:** accessible from the header row settings screen on the
+main alarm list (Step 6). Also exposed in `config.html` by name, since some
+users will prefer phone-based configuration — though the watch is the natural
+place to choose a vibration pattern because you can feel it immediately.
+
+**AppMessage wire format addition:** the vibe pattern index will be sent as an
+additional key (key 16) in the AppMessage exchange, so the phone config page
+can read and set it. This extends the existing wire format without changing
+any existing keys.
+
+---
+
+## Step 6 design — on-watch alarm editor
+
+*(Previously documented as Step 5 — renumbered to reflect correct build order.)*
+
+
+
+### Step 6 — main alarm list — layout
 
 Row 0 is a **header row**, not an alarm slot. It displays the app title and a
 one-line reminder that configuration is done via the phone, e.g.:
@@ -515,7 +602,9 @@ with the implementation. No work planned until Step 5 is complete.
 | 2 | ✅ done | MenuLayer alarm list — callbacks, struct, bitmask days, hardcoded data. Bug fixed: `days_to_string` custom-day loop was unreachable (early `return` removed). |
 | 3 | ✅ done | Persistent storage + single-slot Wakeup API scheduling |
 | 4 | ✅ done | Phone config page working end-to-end. Root cause of close bug: `pebblekit://close#` is the wrong scheme. Fix: read `return_to` param injected by rePebble, navigate via `document.location.href`. Also fixed: `CONFIG_PAGE_URL` in `index.js` updated to renamed repo. |
-| 5 | 🔧 current | On-watch alarm editor (Select long-press → edit window, number pickers for hour/minute, day toggles) + onboarding/instructions screen |
+| 5 | 🔧 current | Alarm firing screen: full-screen dismiss window, repeating vibration via AppTimer, all buttons dismiss + cancel vibe, global vibration pattern setting (persist key 6) |
+| 6 | ⏳ next | On-watch alarm editor: header row with title + config reminder, Select long-press → edit window, number pickers for hour/minute, day checkboxes, navigate/edit mode, persist + reschedule on Back |
+| 7 | ⏳ future | Snooze: snooze button on firing screen, configurable snooze duration, second wakeup slot management |
 
 ---
 
