@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>WakeMeUp — Configure Alarms v18</title>
+  <title>WakeMeUp — Configure Alarms v17</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -160,19 +160,8 @@
 
 <header>
   <h1>WakeMeUp</h1>
-  <p>Configure up to 5 alarms &nbsp;·&nbsp; v18</p>
+  <p>Configure up to 5 alarms &nbsp;·&nbsp; v17</p>
 </header>
-
-<!-- Debug overlay — shows what saveAndClose() is doing in real time -->
-<div id="debugBox" style="
-  display:none;
-  position:fixed; top:0; left:0; right:0;
-  background:#1c1c1e; color:#34c759;
-  font-family:monospace; font-size:12px;
-  padding:12px; z-index:9999;
-  max-height:50vh; overflow-y:auto;
-  border-bottom:2px solid #34c759;
-"></div>
 
 <div class="alarm-list" id="alarmList"></div>
 
@@ -225,13 +214,6 @@ function loadFromURL() {
   } catch(e) {
     console.warn('Could not parse alarms from URL:', e);
   }
-}
-
-// Get the return address from the page header.
-
-function getQueryParam(name) {
-  var results = new RegExp('[\?&]' + name + '=([^&#]*)').exec(window.location.href);
-  return results ? decodeURIComponent(results[1]) : null;
 }
 
 // ── Build hour options (00–23) ────────────────────────────────────
@@ -454,82 +436,38 @@ function revertToWatch() {
   renderCards();
 }
 
-// ── Debug overlay ─────────────────────────────────────────────────
-// Logs messages to a visible on-screen box so we can trace saveAndClose()
-// without needing an external log connection.
-function dbg(msg) {
-  var box = document.getElementById('debugBox');
-  box.style.display = 'block';
-  var line = document.createElement('div');
-  line.textContent = new Date().toISOString().substr(11,8) + ' ' + msg;
-  box.appendChild(line);
-  box.scrollTop = box.scrollHeight;
+// ── Read a single query parameter by name ─────────────────────────
+// Used to read 'return_to', which rePebble injects when it opens this
+// page. We use a manual parser rather than URLSearchParams so that we
+// get the raw (still-encoded) value — URLSearchParams would decode it,
+// but we want to keep the URL intact as a navigation target.
+// Returns defaultValue if the parameter is not present.
+function getQueryParam(name, defaultValue) {
+  var query = location.search.substring(1); // strip leading '?'
+  var vars = query.split('&');
+  for (var i = 0; i < vars.length; i++) {
+    var pair = vars[i].split('=');
+    if (decodeURIComponent(pair[0]) === name) {
+      return decodeURIComponent(pair[1]);
+    }
+  }
+  return defaultValue;
 }
 
-// ── Save and return to PebbleKit JS ──────────────────────────────
+// ── Save and return to PebbleKit JS ───────────────────────────────
+// When rePebble opens this page via Pebble.openURL(), it appends a
+// 'return_to' query parameter containing the correct close URL for
+// the current environment (real watch or emulator). We read that and
+// navigate to it with the encoded JSON result appended as a fragment.
+//
+// If 'return_to' is absent (e.g. opened directly in a desktop browser
+// for testing), we fall back to 'pebblejs://close#'.
+//
+// Reference: https://developer.rebble.io/guides/user-interfaces/app-configuration-static/
 function saveAndClose() {
-  dbg('saveAndClose() called');
-
   var result = { alarms: alarms };
-  var json = JSON.stringify(result);
-  dbg('JSON length: ' + json.length + ' chars');
-
-  var encoded = encodeURIComponent(json);
-
-  var returnTo = getQueryParam('return_to');
-  if (returnTo) {
-    dbg('returnTo found: '+ returnTo);
-    dbg('Lets go there with some data');
-    document.location.href = returnTo + encodeURIComponent(json);
-  } else {
-    dbg("No return_to parameter found");
-    console.error("No return_to parameter found");
-  }
-  
-  var url = 'pebblekit://close#' + encoded;
-  dbg('URL length: ' + url.length + ' chars');
-  dbg('URL prefix: ' + url.substring(0, 40));
-
-  // Method 1: window.location.replace()
-  dbg('Trying method 1: window.location.replace()');
-  try {
-    window.location.replace(url);
-    dbg('Method 1: no exception thrown');
-  } catch(e) {
-    dbg('Method 1 ERROR: ' + e);
-  }
-
-  // Method 2: window.location.href
-  setTimeout(function() {
-    dbg('Trying method 2: document.location =');
-    try {
-      document.location = url;
-      dbg('Method 2: no exception thrown');
-    } catch(e) {
-      dbg('Method 2 ERROR: ' + e);
-    }
-  }, 200);
-
-  // Method 3: hidden <a> click
-  setTimeout(function() {
-    dbg('Trying method 3: anchor click');
-    try {
-      var a = document.createElement('a');
-      a.href = url;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      dbg('Method 3: click fired');
-    } catch(e) {
-      dbg('Method 3 ERROR: ' + e);
-    }
-  }, 400);
-
-  // If we reach here after 600ms the page is still open — all methods failed
-  setTimeout(function() {
-    dbg('STILL OPEN after 600ms — none of the 3 methods closed the page');
-    dbg('Try: navigate away manually or check rePebble version');
-  }, 600);
+  var return_to = getQueryParam('return_to', 'pebblejs://close#');
+  document.location = return_to + encodeURIComponent(JSON.stringify(result));
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
