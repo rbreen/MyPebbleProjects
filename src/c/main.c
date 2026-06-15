@@ -97,6 +97,10 @@ static void wakeup_id_save(void) {
 // ─── Scheduling ──────────────────────────────────────────────────
 
 static time_t alarm_next_fire_time(const Alarm *a) {
+    // only calculate the next fire time for an enabled alarm:
+    if (!a->enabled) return 0;
+
+    // Lets go through the schedule.
     time_t     now = time(NULL);
     struct tm *t   = localtime(&now);
 
